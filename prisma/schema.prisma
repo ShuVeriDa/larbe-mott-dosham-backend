@@ -1,0 +1,42 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model UnifiedEntry {
+  id            Int     @id @default(autoincrement())
+  word          String  // слово без диакритики (основная форма для поиска)
+  wordAccented  String? // слово с ударениями/тильдами
+  wordNormalized String // lowercase, без диакритики — для ILIKE/similarity
+
+  partOfSpeech     String? // часть речи (рус.): сущ., гл., прил., нареч., ...
+  partOfSpeechNah  String? // часть речи (нох.): ц1ердош, хандош, билгалдош, ...
+  nounClass     String? // грамм. класс ед.ч.: "ву", "йу", "ду", "бу"
+  nounClassPlural String? // грамм. класс мн.ч. если отличается
+
+  grammar       Json?   // { genitive, dative, ergative, instrumental, plural, pluralClass,
+                        //   verbPresent, verbPast, verbParticiple }
+
+  meanings      Json    // [{ translation, examples: [{ nah, ru }] }]
+  phraseology   Json?   // [{ nah, ru }]
+  citations     Json?   // [{ text, source? }] — литературные цитаты
+  latinName     String? // латинское анатомическое название
+  styleLabel    String? // стиль/регистр: Прост., Устар., Старин., Разг.
+
+  domain        String? // предметная область: anatomy, computer, math, geology, law, sport
+  sources       String[] // из каких словарей: ["maciev", "baisultanov", ...]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([wordNormalized])
+  @@index([domain])
+}
