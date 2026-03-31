@@ -6,14 +6,18 @@ import {
   normalizeWord,
 } from "src/common/utils/normalize_util";
 import { PrismaService } from "src/prisma.service";
+import { DeclensionService } from "./declension.service";
 import { SearchEntryDto } from "./dto/search-entry.dto";
 
 @Injectable()
 export class DictionaryService {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private declensionService: DeclensionService,
+  ) {}
 
   async search(dto: SearchEntryDto) {
-    const { q, limit = 20, offset = 0 } = dto;
+    const { q, cefr, limit = 20, offset = 0 } = dto;
 
     const raw = q.trim();
     const normalized = normalizeWord(raw);
@@ -24,7 +28,7 @@ export class DictionaryService {
     // ru  → ищем в meanings (JSON) по русскому переводу
     // nah → ищем по wordNormalized
     // unknown → ищем везде
-    const searchCondition =
+    const langCondition =
       lang === "ru"
         ? Prisma.sql`e."meanings"::text ILIKE ${"%" + ruQuery + "%"}`
         : lang === "nah"
@@ -33,6 +37,11 @@ export class DictionaryService {
               e."wordNormalized" ILIKE ${"%" + normalized + "%"}
               OR e."meanings"::text ILIKE ${"%" + ruQuery + "%"}
             )`;
+
+    // Опциональный фильтр по CEFR уровню
+    const searchCondition = cefr
+      ? Prisma.sql`${langCondition} AND e."cefrLevel" = ${cefr}`
+      : langCondition;
 
     const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
       SELECT
@@ -46,6 +55,7 @@ export class DictionaryService {
         e.meanings,
         e.phraseology,
         e.domain,
+        e."cefrLevel",
         e.sources,
         similarity(e."wordNormalized", ${normalized}) AS score
       FROM "UnifiedEntry" e
@@ -57,9 +67,20 @@ export class DictionaryService {
 
     const total = await this.countSearch(searchCondition);
 
+    // Если по чеченскому слову ничего не нашли — пробуем лемматизацию
+    // (пользователь мог ввести косвенную форму: стагана → стаг)
+    let lemmaHint: string[] | undefined;
+    if (
+      results.length === 0 &&
+      (lang === "nah" || lang === "unknown") &&
+      offset === 0
+    ) {
+      lemmaHint = await this.declensionService.lemmatize(raw);
+    }
+
     return {
       data: results,
-      meta: { total, limit, offset, q, lang },
+      meta: { total, limit, offset, q, cefr, lang, lemmaHint },
     };
   }
 
@@ -82,12 +103,24 @@ export class DictionaryService {
       GROUP BY domain
       ORDER BY count DESC
     `;
+    const cefrLevels = await this.prisma.$queryRaw<
+      { cefrLevel: string | null; count: bigint }[]
+    >`
+      SELECT "cefrLevel", COUNT(*) as count
+      FROM "UnifiedEntry"
+      GROUP BY "cefrLevel"
+      ORDER BY "cefrLevel" ASC
+    `;
 
     return {
       total,
       domains: domains.map((d) => ({
         domain: d.domain ?? "general",
         count: Number(d.count),
+      })),
+      cefrLevels: cefrLevels.map((c) => ({
+        level: c.cefrLevel ?? "unknown",
+        count: Number(c.count),
       })),
     };
   }
@@ -113,6 +146,7 @@ export interface UnifiedSearchResult {
   meanings: unknown;
   phraseology: unknown;
   domain: string | null;
+  cefrLevel: string | null;
   sources: string[];
   score?: number;
 }

@@ -1,45 +1,198 @@
 import type { GrammarInfo, ParsedEntry, RawDictEntry } from "./types";
-import { cleanText, dedup, expandClass, stripHtml } from "./utils";
+import { cleanText, expandClass, stripHtml } from "./utils";
 
 /**
  * Парсер для юридического словаря Абдурашидова (CE↔RU).
  *
- * Особенность: 99% записей имеют пустое поле `translate`.
- * Данные упакованы в поле `word` с HTML-разметкой.
+ * Формат: пары записей — plain headword + detail entry.
+ * Headword: без таба, без HTML, чистое слово.
+ * Detail: начинается с \t, содержит HTML-разметку (<b>, <i>), перевод.
  *
- * Типы записей:
- * - Простые слова (без HTML) — заголовки, пропускаем
- * - Pattern A (CE→RU): `<b>Chechen phrase <i>class</i> </b>Russian translation`
- * - Pattern B (grammar): `<b><i>class; forms...</i></b>Russian translation`
- * - Pattern C: `word <i>class</i>` — чеченское слово с классом, без перевода
- * - 18 записей с непустым translate — RU→CE напрямую
+ * Файл: abdurashidov_ce_ru_ru_ce.json (отсортирован, без дубликатов).
  */
-export function parseAbdurashidovEntries(
-  raws: RawDictEntry[],
-): ParsedEntry[] {
-  const unique = dedup(raws);
+export function parseAbdurashidovEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const results: ParsedEntry[] = [];
+  let pendingHeadword: string | null = null;
 
-  for (const raw of unique) {
-    const entry = parseOne(raw);
+  for (const raw of raws) {
+    const word = raw.word ?? "";
+    const isDetail = word.includes("\t");
+
+    // Plain headword (no tab) — remember for next entry
+    if (!isDetail) {
+      pendingHeadword = cleanText(word);
+      continue;
+    }
+
+    // Detail entry — parse and combine with pending headword
+    const entry = parseDetail(word, pendingHeadword);
     if (entry) results.push(entry);
+    pendingHeadword = null;
   }
 
   return results;
 }
 
 // ---------------------------------------------------------------------------
-// Маппинг классов
+// Парсинг detail-записи
 // ---------------------------------------------------------------------------
 
-/** "д,д" → { nounClass: "ду", nounClassPlural: "ду" }
- *  "в,ю,б" → { nounClass: "ву/йу", nounClassPlural: "бу" }
- *  "в, ю" → { nounClass: "ву", nounClassPlural: "йу" }   (singular, plural)
- *  "д" → { nounClass: "ду" }
- */
-function parseClassMarkers(
-  raw: string,
-): { nounClass?: string; nounClassPlural?: string } {
+function parseDetail(raw: string, headword: string | null): ParsedEntry | null {
+  // Strip leading whitespace/tabs and trailing \r\n
+  const text = raw.replace(/^[\s\t]+/, "").replace(/[\r\n]+$/, "");
+  if (!text) return null;
+
+  const hasBold = text.includes("<b>");
+
+  // ── CE→RU: bold entries ──
+  // <b><i>class; plural class; gen, dat, erg, instr</i></b>translation
+  // <b>phrase <i>class</i></b>translation
+  if (hasBold) {
+    return parseBoldDetail(text, headword);
+  }
+
+  // ── RU→CE: no bold, just Chechen word + <i>class</i> ──
+  // e.g. "дехархо <i>в,ю,б</i>" with headword = "ходатай"
+  return parseNoBoldDetail(text, headword);
+}
+
+// ---------------------------------------------------------------------------
+// Bold detail: CE→RU entries
+// ---------------------------------------------------------------------------
+
+function parseBoldDetail(
+  text: string,
+  headword: string | null,
+): ParsedEntry | null {
+  const lastBoldEnd = text.lastIndexOf("</b>");
+  if (lastBoldEnd === -1) return null;
+
+  const boldPart = text.substring(0, lastBoldEnd + 4);
+  const afterBold = text.substring(lastBoldEnd + 4).trim();
+
+  // Extract grammar from italic blocks inside bold
+  const grammarResult = extractGrammarFromItalic(boldPart);
+  const classInfo = extractClassFromText(boldPart + afterBold);
+
+  // Merge class info: grammar extraction may find plural class
+  const mergedClass = {
+    nounClass: grammarResult.classInfo.nounClass || classInfo.nounClass,
+    nounClassPlural:
+      grammarResult.classInfo.nounClassPlural || classInfo.nounClassPlural,
+  };
+
+  // Extract the Chechen phrase from bold (strip class markers and grammar)
+  let chechenPhrase = boldPart;
+  // Remove all <i>...</i> blocks (class markers and grammar)
+  chechenPhrase = chechenPhrase.replace(/<i>[^<]*<\/i>/g, "");
+  chechenPhrase = stripHtml(chechenPhrase);
+  chechenPhrase = cleanText(chechenPhrase);
+  // Remove leading class letters outside <i>: "в,ю; ..." → "..."
+  chechenPhrase = chechenPhrase.replace(
+    /^[бвдйю]\s*(?:,\s*[бвдйю]\s*)*;\s*/,
+    "",
+  );
+  // Remove trailing semicolons left after stripping <i> blocks
+  chechenPhrase = chechenPhrase.replace(/\s*;\s*$/, "");
+
+  // Build the word: headword + phrase from bold
+  let word = "";
+  if (headword && chechenPhrase) {
+    // If phrase starts with "-", concatenate directly: бакъ + -пачхьалкхана = бакъ-пачхьалкхана
+    if (chechenPhrase.startsWith("-")) {
+      word = headword + chechenPhrase;
+    } else {
+      word = headword + " " + chechenPhrase;
+    }
+  } else if (chechenPhrase) {
+    word = chechenPhrase;
+  } else if (headword) {
+    word = headword;
+  }
+
+  if (!word) return null;
+
+  // Russian translation: after </b>, strip any remaining <i>class</i> and HTML
+  let translation = afterBold;
+  translation = translation.replace(/<i>[^<]*<\/i>/g, "");
+  translation = stripHtml(translation);
+  translation = cleanText(translation);
+
+  const entry: ParsedEntry = {
+    word,
+    nounClass: mergedClass.nounClass,
+    nounClassPlural: mergedClass.nounClassPlural,
+    meanings: translation ? [{ translation }] : [],
+    domain: "law",
+  };
+
+  if (grammarResult.grammar) entry.grammar = grammarResult.grammar;
+
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
+// No-bold detail: RU→CE entries (italic only)
+// ---------------------------------------------------------------------------
+
+function parseNoBoldDetail(
+  text: string,
+  headword: string | null,
+): ParsedEntry | null {
+  const classInfo = extractClassFromText(text);
+
+  // Chechen word: strip class markers and HTML
+  let chechenWord = text.replace(/<i>[^<]*<\/i>/g, "");
+  chechenWord = stripHtml(chechenWord);
+  chechenWord = cleanText(chechenWord);
+
+  if (!chechenWord) return null;
+
+  // headword is the Russian translation
+  const translation = headword || "";
+
+  const entry: ParsedEntry = {
+    word: chechenWord,
+    nounClass: classInfo.nounClass,
+    nounClassPlural: classInfo.nounClassPlural,
+    meanings: translation ? [{ translation }] : [],
+    domain: "law",
+  };
+
+  return entry;
+}
+
+// ---------------------------------------------------------------------------
+// Class extraction
+// ---------------------------------------------------------------------------
+
+/** Matches class markers like "в,ю,б", "д,д", "ю", "в, ю" inside <i> tags */
+const CLASS_RE = /<i>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*<\/i>/g;
+
+function extractClassFromText(text: string): {
+  nounClass?: string;
+  nounClassPlural?: string;
+} {
+  let last: string | null = null;
+  const re = new RegExp(CLASS_RE.source, "g");
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    last = m[1];
+  }
+  if (!last) {
+    // Try class inside combined italic: <i>в, ю; forms...</i>
+    const grammarClassRe = /<i>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*[;,]/;
+    const gm = text.match(grammarClassRe);
+    if (gm) last = gm[1];
+  }
+  if (!last) return {};
+  return parseClassMarkers(last);
+}
+
+function parseClassMarkers(raw: string): {
+  nounClass?: string;
+  nounClassPlural?: string;
+} {
   const cleaned = raw.replace(/[()]/g, "").trim();
   const parts = cleaned.split(/\s*,\s*/);
 
@@ -71,152 +224,79 @@ function parseClassMarkers(
 }
 
 // ---------------------------------------------------------------------------
-// Class extraction
-// ---------------------------------------------------------------------------
-
-/** Matches standalone class markers: `<i>д,д</i>`, `<i>ю</i>`, `<i>в,ю,б</i>` */
-const CLASS_STANDALONE_RE =
-  /<i>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*<\/i>/g;
-
-/**
- * Matches italic blocks that START with a class marker followed by semicolons
- * (grammar forms): `<i>д; формы...</i>`, `<i>в,ю; формы...</i>`
- */
-const CLASS_GRAMMAR_RE =
-  /<i>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*;[^<]*<\/i>/g;
-
-/**
- * Matches italic blocks where class is followed by comma+space+word (grammar),
- * NOT another class letter: `<i>д, васташ д; forms...</i>`
- */
-const CLASS_COMMA_GRAMMAR_RE =
-  /<i>\s*([бвдйю])\s*,\s+[^бвдйю<][^<]*<\/i>/;
-
-/**
- * Matches class markers OUTSIDE italic but inside bold:
- * `<b>в,ю;<i> forms...</i></b>` — class letters before the semicolon+italic
- */
-const CLASS_BOLD_OUTSIDE_RE =
-  /<b>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*;\s*<i>/;
-
-/**
- * Matches italic blocks that start with `(лат.)` followed by class:
- * `<i>(лат.) ю ...</i>`
- */
-const CLASS_LAT_RE = /<i>\s*\(лат\.\)\s+([бвдйю])\s*/;
-
-function extractClassFromText(
-  text: string,
-): { nounClass?: string; nounClassPlural?: string } {
-  // Try standalone class markers first (most common)
-  let last: string | null = null;
-  let m: RegExpExecArray | null;
-
-  const re1 = new RegExp(CLASS_STANDALONE_RE.source, "g");
-  while ((m = re1.exec(text)) !== null) {
-    last = m[1];
-  }
-  if (last) return parseClassMarkers(last);
-
-  // Try class at start of grammar italic block: <i>д; forms...</i>
-  const re2 = new RegExp(CLASS_GRAMMAR_RE.source, "g");
-  while ((m = re2.exec(text)) !== null) {
-    last = m[1];
-  }
-  if (last) return parseClassMarkers(last);
-
-  // Try class followed by comma+space+word (not another class letter):
-  // <i>д, васташ д; forms...</i>
-  const commaGrammarMatch = text.match(CLASS_COMMA_GRAMMAR_RE);
-  if (commaGrammarMatch) return parseClassMarkers(commaGrammarMatch[1]);
-
-  // Try class outside italic but inside bold: <b>в,ю;<i>forms</i></b>
-  const boldOutsideMatch = text.match(CLASS_BOLD_OUTSIDE_RE);
-  if (boldOutsideMatch) return parseClassMarkers(boldOutsideMatch[1]);
-
-  // Try (лат.) prefix
-  const latMatch = text.match(CLASS_LAT_RE);
-  if (latMatch) return parseClassMarkers(latMatch[1]);
-
-  return {};
-}
-
-/** Убирает standalone class-маркеры `<i>д,д</i>` из текста */
-function stripClassMarkers(text: string): string {
-  return text.replace(
-    /<i>\s*[бвдйю]\s*(?:,\s*[бвдйю]\s*)*\s*<\/i>/g,
-    "",
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Grammar extraction from italic blocks like <i>д; формы д; ...</i>
+// Grammar extraction from italic blocks
 // ---------------------------------------------------------------------------
 
 /**
- * Detects and extracts grammar from italic blocks like:
- * - `<i>д; дакъалацарш д; дакъалацаран, дакъалацарна, дакъалацаро, дакъалацаре</i>`
- * - `<i>д, васташ д; вастан, вастана, васто, васте</i>`
- * - `<b>в,ю;<i> декъахой б; forms...</i></b>` (class outside italic)
- * Returns the class info and a GrammarInfo object.
+ * Extracts grammar from italic blocks like:
+ * <i>в, ю; арзхой б; арзхочун, арзхочунна, арзхочо, арзхочуьнга</i>
+ * <i>ю; белхазаллаш ю; белхазаллин, белхазаллина, белхазалло, белхазалле</i>
+ * <i>ю</i>;<i> ерматаллаш ю; ерматаллин, ерматаллина, ерматалло, ерматалле</i>
  */
-function extractGrammarFromItalic(
-  text: string,
-): { grammar?: GrammarInfo; classInfo: { nounClass?: string; nounClassPlural?: string } } {
-  let classRaw: string | undefined;
-  let formsText: string | undefined;
+function extractGrammarFromItalic(text: string): {
+  grammar?: GrammarInfo;
+  classInfo: { nounClass?: string; nounClassPlural?: string };
+} {
+  let content: string | null = null;
 
-  // Pattern 1: <i>class; forms</i>
-  const grammarItalicRe =
-    /<i>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*;\s*([^<]*)<\/i>/;
-  const m1 = text.match(grammarItalicRe);
-  if (m1) {
-    classRaw = m1[1];
-    formsText = m1[2].trim();
+  // Pattern 1: single italic with semicolons: <i>class; forms</i>
+  const singleRe = /<i>\s*([^<]+)\s*<\/i>/;
+  const m1 = text.match(singleRe);
+  if (m1 && m1[1].includes(";")) {
+    content = m1[1].trim();
   }
 
-  // Pattern 2: <i>class, word forms; gen, dat, erg, instr</i>
-  // e.g. <i>д, васташ д; вастан, вастана, васто, васте</i>
-  if (!classRaw) {
-    const commaGrammarRe =
-      /<i>\s*([бвдйю])\s*,\s+([^<]+)<\/i>/;
-    const m2 = text.match(commaGrammarRe);
+  // Pattern 2: split italic: <i>class</i>;<i> forms</i>
+  if (!content) {
+    const splitRe =
+      /<i>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*<\/i>\s*;\s*<i>\s*([^<]+)\s*<\/i>/;
+    const m2 = text.match(splitRe);
     if (m2) {
-      classRaw = m2[1];
-      formsText = m2[2].trim();
+      content = m2[1].trim() + "; " + m2[2].trim();
     }
   }
 
-  // Pattern 3: <b>class;<i> forms...</i></b> (class outside italic)
-  if (!classRaw) {
-    const boldOutsideRe =
-      /<b>\s*([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)\s*;\s*<i>\s*([^<]*)<\/i>/;
-    const m3 = text.match(boldOutsideRe);
-    if (m3) {
-      classRaw = m3[1];
-      formsText = m3[2].trim();
-    }
+  if (!content) return { classInfo: {} };
+
+  // Must contain semicolons (grammar forms)
+  if (!content.includes(";")) return { classInfo: {} };
+
+  const semiParts = content.split(";").map((p) => p.trim());
+  if (semiParts.length < 2) return { classInfo: {} };
+
+  // First part: class markers (e.g. "в, ю" or "ю")
+  const classRaw = semiParts[0];
+  const classMatch = classRaw.match(/^([бвдйю]\s*(?:,\s*[бвдйю]\s*)*)$/);
+  if (!classMatch) return { classInfo: {} };
+
+  const classInfo: { nounClass?: string; nounClassPlural?: string } = {};
+  const sgParts = classMatch[1].trim().split(/\s*,\s*/);
+  const sgExpanded = sgParts.map((p) => expandClass(p)).filter(Boolean);
+  if (sgExpanded.length > 0) {
+    classInfo.nounClass = sgExpanded.join("/");
   }
 
-  if (!classRaw || !formsText) return { classInfo: {} };
-
-  const classInfo = parseClassMarkers(classRaw);
-
-  // Parse forms: "дакъалацарш д; дакъалацаран, дакъалацарна, дакъалацаро, дакъалацаре"
   const grammar: GrammarInfo = {};
-  const semiParts = formsText.split(";").map((p) => p.trim());
 
-  if (semiParts.length >= 1) {
-    // First part: plural + class letter
-    const pluralPart = semiParts[0]
-      .replace(/\s+[бвдйю]\s*$/, "")
-      .trim();
-    if (pluralPart) grammar.plural = pluralPart;
+  // Second part: plural + class (e.g. "арзхой б")
+  if (semiParts.length >= 2 && semiParts[1]) {
+    const pluralPart = semiParts[1].trim();
+    const pluralClassMatch = pluralPart.match(/^(.+?)\s+([бвдйю])\s*$/);
+    if (pluralClassMatch) {
+      grammar.plural = pluralClassMatch[1].trim();
+      const plCls = expandClass(pluralClassMatch[2]);
+      if (plCls) {
+        classInfo.nounClassPlural = plCls;
+        grammar.pluralClass = plCls;
+      }
+    } else if (pluralPart) {
+      grammar.plural = pluralPart;
+    }
   }
 
-  if (semiParts.length >= 2) {
-    // Second part: genitive, dative, ergative, instrumental
-    const forms = semiParts[1].split(",").map((f) => f.trim());
+  // Third part: case forms (gen, dat, erg, instr)
+  if (semiParts.length >= 3 && semiParts[2]) {
+    const forms = semiParts[2].split(",").map((f) => f.trim());
     if (forms.length >= 1 && forms[0]) grammar.genitive = forms[0];
     if (forms.length >= 2 && forms[1]) grammar.dative = forms[1];
     if (forms.length >= 3 && forms[2]) grammar.ergative = forms[2];
@@ -225,199 +305,4 @@ function extractGrammarFromItalic(
 
   const hasGrammar = Object.keys(grammar).length > 0;
   return { grammar: hasGrammar ? grammar : undefined, classInfo };
-}
-
-// ---------------------------------------------------------------------------
-// Основной парсинг одной записи
-// ---------------------------------------------------------------------------
-
-function parseOne(raw: RawDictEntry): ParsedEntry | null {
-  const translate = raw.translate
-    ?.trim()
-    .replace(/\r\n/g, "")
-    .replace(/\r/g, "")
-    .replace(/\n/g, "");
-  const word = raw.word ?? "";
-
-  // ── Entries WITH translate field ──
-  if (translate) {
-    return parseWithTranslate(raw.word, translate);
-  }
-
-  // ── Entries WITHOUT translate (99%) ──
-  // Strip leading whitespace + tabs
-  const stripped = word
-    .replace(/^[\s\t]+/, "")
-    .replace(/\r\n$/, "")
-    .replace(/\r$/, "")
-    .replace(/\n$/, "");
-
-  if (!stripped) return null;
-
-  const hasBold = stripped.includes("<b>");
-  const hasItalic = stripped.includes("<i>");
-
-  // Plain headwords (no HTML) — skip
-  if (!hasBold && !hasItalic) return null;
-
-  // Pattern C: italic-only, no bold — standalone Chechen word with class
-  if (!hasBold && hasItalic) {
-    return parseItalicOnly(stripped);
-  }
-
-  // Pattern A/B: has bold tags — sub-entry with phrase + translation
-  return parseBoldEntry(stripped);
-}
-
-// ---------------------------------------------------------------------------
-// Parse entries WITH translate field (18 entries, RU→CE)
-// ---------------------------------------------------------------------------
-
-function parseWithTranslate(
-  rawWord: string,
-  translate: string,
-): ParsedEntry | null {
-  const wordClean = cleanText(stripHtml(rawWord));
-  if (!wordClean || wordClean === "1") return null;
-
-  // Special case: translate starts with <b> — it contains Chechen + Russian
-  // e.g. word="т1аьххьара", translate="<b>хан <i>ю,ю</i> </b>крайний срок"
-  if (translate.includes("<b>")) {
-    const lastBoldEnd = translate.lastIndexOf("</b>");
-    if (lastBoldEnd !== -1) {
-      const chechenPart = translate.substring(0, lastBoldEnd + 4);
-      const russianPart = translate.substring(lastBoldEnd + 4);
-      const classInfo = extractClassFromText(chechenPart);
-      const chechenText = cleanText(stripHtml(stripClassMarkers(chechenPart)));
-      const russianText = cleanText(stripHtml(russianPart));
-
-      // word field is the Chechen headword, chechenText is the Chechen sub-word
-      const fullWord = wordClean + (chechenText ? " " + chechenText : "");
-
-      return {
-        word: fullWord,
-        nounClass: classInfo.nounClass,
-        nounClassPlural: classInfo.nounClassPlural,
-        meanings: russianText ? [{ translation: russianText }] : [],
-        domain: "law",
-      };
-    }
-  }
-
-  const classInfo = extractClassFromText(translate);
-
-  // Strip class markers and HTML from translation
-  let translationText = stripClassMarkers(translate);
-  translationText = stripHtml(translationText);
-  translationText = cleanText(translationText);
-
-  if (!translationText) return null;
-
-  return {
-    word: wordClean,
-    nounClass: classInfo.nounClass,
-    nounClassPlural: classInfo.nounClassPlural,
-    meanings: [{ translation: translationText }],
-    domain: "law",
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Pattern C: italic-only  — "word <i>class</i>"
-// ---------------------------------------------------------------------------
-
-function parseItalicOnly(text: string): ParsedEntry | null {
-  const classInfo = extractClassFromText(text);
-  const wordText = cleanText(stripHtml(stripClassMarkers(text)));
-  if (!wordText) return null;
-
-  return {
-    word: wordText,
-    nounClass: classInfo.nounClass,
-    nounClassPlural: classInfo.nounClassPlural,
-    meanings: [],
-    domain: "law",
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Pattern A/B: bold entries — `<b>...Chechen... </b>Russian translation`
-// ---------------------------------------------------------------------------
-
-function parseBoldEntry(text: string): ParsedEntry | null {
-  // The LAST `</b>` boundary separates the Chechen part from the Russian
-  // translation. Everything before (including all <b>...</b> blocks) is the
-  // Chechen phrase/grammar; everything after the last </b> is Russian.
-
-  const lastBoldEnd = text.lastIndexOf("</b>");
-  if (lastBoldEnd === -1) return null;
-
-  const chechenRaw = text.substring(0, lastBoldEnd + 4);
-  const russianRaw = text.substring(lastBoldEnd + 4);
-
-  // Check for grammar-form italic blocks: <b><i>д; forms...</i></b>
-  const { grammar, classInfo: grammarClassInfo } =
-    extractGrammarFromItalic(chechenRaw);
-
-  // Also try extracting class from standalone markers
-  const standaloneClassInfo = extractClassFromText(chechenRaw);
-  const classInfo =
-    grammarClassInfo.nounClass ? grammarClassInfo : standaloneClassInfo;
-
-  // Build the Chechen word: strip grammar italic blocks, class markers, and HTML
-  let chechenClean = chechenRaw;
-  // Remove grammar italic blocks: <i>class; forms...</i>
-  chechenClean = chechenClean.replace(
-    /<i>\s*[бвдйю]\s*(?:,\s*[бвдйю]\s*)*\s*;[^<]*<\/i>/g,
-    "",
-  );
-  // Remove <i>class, word forms; ...</i> (class + comma + grammar)
-  chechenClean = chechenClean.replace(
-    /<i>\s*[бвдйю]\s*,\s+[^<]+<\/i>/g,
-    "",
-  );
-  // Remove class prefix outside italic + grammar italic: <b>в,ю;<i>forms</i></b>
-  chechenClean = chechenClean.replace(
-    /[бвдйю]\s*(?:,\s*[бвдйю]\s*)*\s*;\s*<i>[^<]*<\/i>/g,
-    "",
-  );
-  // Remove <i>(лат.) class ...</i> blocks
-  chechenClean = chechenClean.replace(/<i>\s*\(лат\.\)\s+[бвдйю][^<]*<\/i>/g, "");
-  // Remove standalone class markers
-  chechenClean = stripClassMarkers(chechenClean);
-  // Strip all remaining HTML
-  chechenClean = stripHtml(chechenClean);
-  chechenClean = cleanText(chechenClean);
-
-  // If word is empty but we have grammar, derive word from grammar plural form.
-  // e.g. grammar.plural="декъахой" → word is the plural form (base word was in
-  // the preceding headword entry which we skipped).
-  if (!chechenClean && grammar?.plural) {
-    chechenClean = grammar.plural;
-  }
-
-  // Build the Russian translation: strip remaining HTML and class markers
-  let russianClean = stripClassMarkers(russianRaw);
-  russianClean = stripHtml(russianClean);
-  russianClean = cleanText(russianClean);
-
-  // If both parts empty, skip
-  if (!chechenClean && !russianClean) return null;
-
-  const meanings = russianClean ? [{ translation: russianClean }] : [];
-
-  const entry: ParsedEntry = {
-    word: chechenClean || "",
-    nounClass: classInfo.nounClass,
-    nounClassPlural: classInfo.nounClassPlural,
-    meanings,
-    domain: "law",
-  };
-
-  if (grammar) entry.grammar = grammar;
-
-  // Skip entries with empty word
-  if (!entry.word) return null;
-
-  return entry;
 }

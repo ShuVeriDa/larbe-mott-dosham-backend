@@ -32,6 +32,7 @@ model UnifiedEntry {
   styleLabel    String? // стиль/регистр: Прост., Устар., Старин., Разг.
 
   domain        String? // предметная область: anatomy, computer, math, geology, law, sport
+  cefrLevel     String? // оценка уровня CEFR: A1, A2, B1, B2, C1, C2
   sources       String[] // из каких словарей: ["maciev", "baisultanov", ...]
 
   createdAt DateTime @default(now())
@@ -39,4 +40,5 @@ model UnifiedEntry {
 
   @@index([wordNormalized])
   @@index([domain])
+  @@index([cefrLevel])
 }

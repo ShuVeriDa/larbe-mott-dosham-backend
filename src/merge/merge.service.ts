@@ -15,6 +15,7 @@ import {
   type Phrase,
   type Citation,
 } from "./parsers";
+import { deduplicateAndSort } from "./parsers/original.parser";
 
 /** Папка для распарсенных JSON */
 const PARSED_DIR = "dictionaries/parsed";
@@ -60,6 +61,39 @@ export class MergeService {
     const results: Awaited<ReturnType<MergeService["parseOne"]>>[] = [];
     for (const meta of DICTIONARIES) {
       results.push(await this.parseOne(meta.slug));
+    }
+    return { dictionaries: results };
+  }
+
+  // -----------------------------------------------------------------------
+  // Очистка оригинальных словарей: дедупликация + сортировка по id
+  // -----------------------------------------------------------------------
+  async cleanOriginal(slug: string) {
+    const meta = DICTIONARIES.find((d) => d.slug === slug);
+    if (!meta) throw new BadRequestException(`Словарь "${slug}" не найден`);
+
+    const absPath = path.resolve(process.cwd(), meta.file);
+    const rawEntries = await this.readDictionaryJson(meta.file);
+    const cleaned = deduplicateAndSort(rawEntries);
+
+    await fs.writeFile(absPath, JSON.stringify(cleaned, null, 2), "utf-8");
+
+    this.logger.log(`clean/${slug}: ${rawEntries.length} → ${cleaned.length} (удалено ${rawEntries.length - cleaned.length} дубликатов)`);
+
+    return {
+      slug: meta.slug,
+      title: meta.title,
+      sourceCount: rawEntries.length,
+      cleanedCount: cleaned.length,
+      removedDuplicates: rawEntries.length - cleaned.length,
+      file: meta.file,
+    };
+  }
+
+  async cleanAllOriginals() {
+    const results: Awaited<ReturnType<MergeService["cleanOriginal"]>>[] = [];
+    for (const meta of DICTIONARIES) {
+      results.push(await this.cleanOriginal(meta.slug));
     }
     return { dictionaries: results };
   }
@@ -227,6 +261,7 @@ export class MergeService {
       latinName: e.latinName ?? null,
       styleLabel: e.styleLabel ?? null,
       domain: e.domain ?? null,
+      cefrLevel: estimateCefr(e),
       sources: e.sources,
     }));
 
@@ -458,4 +493,95 @@ function mergeCitations(target: Citation[], source: Citation[]): void {
       existing.add(key);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Оценка уровня CEFR (A1–C2)
+// ---------------------------------------------------------------------------
+
+/** Домены, указывающие на высокий уровень сложности */
+const SPECIALIZED_DOMAINS: Record<string, "B2" | "C1"> = {
+  sport: "B2",
+  computer: "B2",
+  law: "C1",
+  math: "C1",
+  anatomy: "C1",
+  geology: "C1",
+};
+
+/** Стилевые пометы → базовый уровень */
+const STYLE_CEFR: Record<string, string> = {
+  // Простые / разговорные → низкий уровень
+  "Прост.": "A2",
+  "Разг.": "A2",
+  // Книжные / формальные → средний
+  "Книжн.": "B2",
+  "Религ.": "B2",
+  "Диал.": "B2",
+  "Ирон.": "B2",
+  "Жарг.": "B1",
+  "Шутл.-ирон.": "B2",
+  "Шутл-ирон.": "B2",
+  "Бран.": "B1",
+  "Груб.": "B1",
+  "Презр.": "B2",
+  "Пренебр.": "B2",
+  // Архаичные / поэтические → высокий
+  "Устар.": "C1",
+  "Уст.": "C1",
+  "Старин.": "C2",
+  "Поэт.": "C2",
+};
+
+/** Части речи повышенной сложности */
+const COMPLEX_POS = new Set(["прич.", "дееприч.", "масд."]);
+
+const CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
+
+function cefrMax(a: string, b: string): string {
+  const ia = CEFR_ORDER.indexOf(a as (typeof CEFR_ORDER)[number]);
+  const ib = CEFR_ORDER.indexOf(b as (typeof CEFR_ORDER)[number]);
+  return ia >= ib ? a : b;
+}
+
+/**
+ * Оценка уровня CEFR на основе косвенных сигналов.
+ *
+ * Факторы (от самого весомого):
+ *   1. sources.length — сколько словарей содержат слово (прокси частотности)
+ *   2. domain — специализированная область = высокий уровень
+ *   3. styleLabel — стилевая помета
+ *   4. partOfSpeech — морфологическая сложность
+ */
+function estimateCefr(entry: ParsedEntry & { sources: string[] }): string {
+  const srcCount = entry.sources.length;
+
+  // 1. Базовый уровень по количеству источников (основной фактор)
+  let level: string;
+  if (srcCount >= 6) {
+    level = "A1";
+  } else if (srcCount >= 4) {
+    level = "A2";
+  } else if (srcCount >= 2) {
+    level = "B1";
+  } else {
+    level = "B2";
+  }
+
+  // 2. Домен может повысить уровень
+  if (entry.domain && entry.domain in SPECIALIZED_DOMAINS) {
+    level = cefrMax(level, SPECIALIZED_DOMAINS[entry.domain]);
+  }
+
+  // 3. Стилевая помета может повысить уровень
+  if (entry.styleLabel && entry.styleLabel in STYLE_CEFR) {
+    level = cefrMax(level, STYLE_CEFR[entry.styleLabel]);
+  }
+
+  // 4. Сложные части речи (причастия, деепричастия) → минимум B1
+  if (entry.partOfSpeech && COMPLEX_POS.has(entry.partOfSpeech)) {
+    level = cefrMax(level, "B1");
+  }
+
+  return level;
 }

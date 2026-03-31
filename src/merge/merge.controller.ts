@@ -39,6 +39,24 @@ export class MergeController {
   }
 
   // -------------------------------------------------------
+  // Очистка оригинальных словарей (дедупликация + сортировка)
+  // -------------------------------------------------------
+
+  // POST /api/merge/clean/:slug — очистить один оригинальный словарь
+  @UseGuards(ApiKeyGuard)
+  @Post("clean/:slug")
+  cleanOriginal(@Param("slug") slug: string) {
+    return this.mergeService.cleanOriginal(slug);
+  }
+
+  // POST /api/merge/clean-all — очистить все оригинальные словари
+  @UseGuards(ApiKeyGuard)
+  @Post("clean-all")
+  cleanAllOriginals() {
+    return this.mergeService.cleanAllOriginals();
+  }
+
+  // -------------------------------------------------------
   // Этап 2: Объединение распарсенных JSON → unified.json
   // -------------------------------------------------------
 
