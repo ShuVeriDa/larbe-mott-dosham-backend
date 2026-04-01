@@ -39,11 +39,16 @@ export function parseComputerEntries(raws: RawDictEntry[]): ParsedEntry[] {
     if (word1.includes("</b>")) continue; // сломанная запись "упаковать </b>("
 
     // Извлекаем класс из word
-    const { word, nounClass, nounClassPlural } = extractClassFromWord(wordRaw);
+    const classInfo = extractClassFromWord(wordRaw);
+    const word = classInfo.word;
+    let nounClass = classInfo.nounClass;
+    let nounClassPlural = classInfo.nounClassPlural;
 
     // Чистое слово — берем word1 если есть, иначе очищенный word
     const cleanWord = word1
-      ? stripHtml(cleanText(word1)).replace(/\([^)]*\)/g, "").trim()
+      ? stripHtml(cleanText(word1))
+          .replace(/\([^)]*\)/g, "")
+          .trim()
       : word;
 
     if (!cleanWord) continue;
@@ -51,18 +56,53 @@ export function parseComputerEntries(raws: RawDictEntry[]): ParsedEntry[] {
     // Парсим translate
     // Разбиваем по <br /> или <br/>
     const parts = translate.split(/<br\s*\/?>/);
+
+    // Извлекаем класс из translate, если не нашли в word
+    let translationHead = parts[0];
+    if (!nounClass) {
+      const classInTranslate = translationHead.match(
+        /<i>\(([бвдйю/]+)(?:,\s*([бвдйю]+))?\)<\/i>/,
+      );
+      if (classInTranslate) {
+        nounClass = classInTranslate[1].includes("/")
+          ? expandClassCompound(classInTranslate[1])
+          : expandClass(classInTranslate[1]);
+        if (classInTranslate[2]) {
+          nounClassPlural = expandClass(classInTranslate[2]);
+        }
+        translationHead = translationHead
+          .replace(classInTranslate[0], "")
+          .trim();
+      }
+    }
+
     const mainTranslation = stripStressMarks(
-      stripHtml(cleanText(parts[0])).trim(),
+      stripHtml(cleanText(translationHead)).trim(),
     );
 
     if (!mainTranslation) continue;
 
     // Извлекаем примеры из оставшейся части
     const exampleText = parts.slice(1).join("<br />");
-    const examples: Phrase[] = extractDashExamples(exampleText);
+    const rawExamples: Phrase[] = extractDashExamples(exampleText);
 
-    const wordClean = stripStressMarks(stripHtml(cleanWord));
-    const wordAccented = stripHtml(cleanText(word1 || wordRaw));
+    // Определяем направление: если заголовок содержит Ӏ/ӏ — это nah→ru,
+    // иначе ru→nah и nah/ru в примерах перепутаны
+    const isNahToRu = /[Ӏӏ]/.test(word1 || wordRaw);
+    const examples: Phrase[] = isNahToRu
+      ? rawExamples
+      : rawExamples.map((ex) => ({ nah: ex.ru, ru: ex.nah }));
+
+    const wordClean = stripStressMarks(stripHtml(cleanWord))
+      .replace(/\s*[–-]\s*$/, "")
+      .trim();
+    const wordAccented = stripHtml(cleanText(word1 || wordRaw))
+      .replace(
+        /\s*\((?:[бвдйю](?:\/[бвдйю])?(?:,\s*[бвдйю])?(?:;\s*)?)+\)\s*/g,
+        " ",
+      )
+      .replace(/\s*[–-]\s*$/, "")
+      .trim();
 
     results.push({
       word: wordClean,
@@ -100,6 +140,19 @@ function extractClassFromWord(wordRaw: string): {
   let nounClass: string | undefined;
   let nounClassPlural: string | undefined;
 
+  // Сломанный формат с точкой с запятой: <i>(в</i>/<i>й, б; й, й)</i>
+  const brokenSemiMatch = word.match(
+    /<i>\(([бвдйю])<\/i>\/<i>([бвдйю]),\s*([бвдйю]);\s*([бвдйю]),\s*([бвдйю])\)<\/i>/,
+  );
+  if (brokenSemiMatch) {
+    // в/й, б — одушевлённый; й, й — неодушевлённый
+    // Берём неодушевлённый как основной (для компьютерного словаря)
+    nounClass = expandClass(brokenSemiMatch[4]);
+    nounClassPlural = expandClass(brokenSemiMatch[5]);
+    word = word.replace(brokenSemiMatch[0], "").trim();
+    return { word: stripHtml(cleanText(word)), nounClass, nounClassPlural };
+  }
+
   // Сломанный формат: <i>(в</i>/<i>й, б)</i>
   const brokenMatch = word.match(
     /<i>\(([бвдйю])<\/i>\/<i>([бвдйю]),\s*([бвдйю])\)<\/i>/,
@@ -112,9 +165,7 @@ function extractClassFromWord(wordRaw: string): {
   }
 
   // Стандартный формат: <i>(CLASS, CLASS)</i> или <i>(CLASS)</i>
-  const italicMatch = word.match(
-    /<i>\(([бвдйю/]+)(?:,\s*([бвдйю]+))?\)<\/i>/,
-  );
+  const italicMatch = word.match(/<i>\(([бвдйю/]+)(?:,\s*([бвдйю]+))?\)<\/i>/);
   if (italicMatch) {
     const rawSingular = italicMatch[1];
     nounClass = rawSingular.includes("/")
@@ -124,6 +175,17 @@ function extractClassFromWord(wordRaw: string): {
       nounClassPlural = expandClass(italicMatch[2]);
     }
     word = word.replace(italicMatch[0], "").trim();
+    return { word: stripHtml(cleanText(word)), nounClass, nounClassPlural };
+  }
+
+  // Голые скобки с точкой с запятой: "редактор (в/й, б; й, й)"
+  const bareSemiMatch = word.match(
+    /\(([бвдйю/]+),\s*([бвдйю]+);\s*([бвдйю/]+),\s*([бвдйю]+)\)/,
+  );
+  if (bareSemiMatch) {
+    nounClass = expandClass(bareSemiMatch[3]);
+    nounClassPlural = expandClass(bareSemiMatch[4]);
+    word = word.replace(bareSemiMatch[0], "").trim();
     return { word: stripHtml(cleanText(word)), nounClass, nounClassPlural };
   }
 
