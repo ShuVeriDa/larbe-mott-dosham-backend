@@ -82,6 +82,37 @@ export class MergeController {
   }
 
   // -------------------------------------------------------
+  // Этап 2 (пошаговый): Слияние с версионированием
+  // -------------------------------------------------------
+
+  // POST /api/merge/unify-step/:slug — добавить словарь + снэпшот + лог
+  @UseGuards(ApiKeyGuard)
+  @Post("unify-step/:slug")
+  unifyStep(@Param("slug") slug: string) {
+    return this.mergeService.unifyStep(slug);
+  }
+
+  // GET /api/merge/unified-log — история слияния + что осталось
+  @Get("unified-log")
+  getUnifiedLog() {
+    return this.mergeService.getUnifiedLog();
+  }
+
+  // POST /api/merge/rollback/:step — откатиться к шагу (0 = пустой)
+  @UseGuards(ApiKeyGuard)
+  @Post("rollback/:step")
+  rollback(@Param("step") step: string) {
+    return this.mergeService.rollback(parseInt(step, 10));
+  }
+
+  // DELETE /api/merge/reset-steps — полный сброс (unified + снэпшоты + лог)
+  @UseGuards(ApiKeyGuard)
+  @Delete("reset-steps")
+  resetSteps() {
+    return this.mergeService.resetSteps();
+  }
+
+  // -------------------------------------------------------
   // Этап 3: Загрузка unified.json → БД
   // -------------------------------------------------------
 

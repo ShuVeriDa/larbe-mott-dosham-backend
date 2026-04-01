@@ -21,8 +21,40 @@ import { deduplicateAndSort } from "./parsers/original.parser";
 const PARSED_DIR = "dictionaries/parsed";
 /** Итоговый единый файл */
 const UNIFIED_FILE = "dictionaries/unified.json";
+/** Папка для версионных снэпшотов */
+const UNIFIED_DIR = "dictionaries/unified";
+/** Лог слияния */
+const MERGE_LOG_FILE = "dictionaries/unified/merge_log.json";
 
 const CHUNK = 500;
+
+/** Рекомендуемый порядок слияния: сначала общие → потом специализированные */
+const MERGE_ORDER: string[] = [
+  "maciev",
+  "baisultanov-nah-ru",
+  "karasaev-maciev-ru-nah",
+  "aslahanov-ru-nah",
+  "ismailov-nah-ru",
+  "ismailov-ru-nah",
+  "daukaev-ru-nah",
+  "abdurashidov",
+  "umarhadjiev-ahmatukaev",
+  "nah-ru-anatomy",
+  "ru-nah-anatomy",
+  "nah-ru-computer",
+];
+
+export interface MergeLogEntry {
+  step: number;
+  slug: string;
+  title: string;
+  timestamp: string;
+  entriesFromDict: number;
+  newWords: number;
+  enrichedWords: number;
+  totalUnifiedEntries: number;
+  snapshotFile: string;
+}
 
 @Injectable()
 export class MergeService {
@@ -229,6 +261,181 @@ export class MergeService {
   }
 
   // -----------------------------------------------------------------------
+  // Этап 2в: Пошаговое слияние с версионированием
+  // -----------------------------------------------------------------------
+
+  /** Добавить один словарь → сохранить снэпшот + лог */
+  async unifyStep(slug: string) {
+    const meta = DICTIONARIES.find((d) => d.slug === slug);
+    if (!meta) throw new BadRequestException(`Словарь "${slug}" не найден`);
+
+    // Читаем parsed файл
+    const parsedPath = this.resolvedParsedPath(slug);
+    let raw: string;
+    try {
+      raw = await fs.readFile(parsedPath, "utf-8");
+    } catch {
+      throw new BadRequestException(
+        `Файл ${PARSED_DIR}/${slug}.json не найден. Сначала вызовите POST /api/merge/parse/${slug}`,
+      );
+    }
+    const newEntries: ParsedEntry[] = JSON.parse(raw);
+
+    // Загружаем текущий unified + лог
+    const { merged, existingSources } = await this.loadUnifiedMap();
+    const log = await this.readMergeLog();
+
+    // Проверяем не был ли уже добавлен
+    if (existingSources.has(slug)) {
+      throw new BadRequestException(
+        `Словарь "${slug}" уже добавлен (шаг ${log.find((e) => e.slug === slug)?.step}). Для пересборки используйте DELETE /api/merge/reset-steps`,
+      );
+    }
+
+    // Мержим
+    let added = 0;
+    let enriched = 0;
+    for (const entry of newEntries) {
+      const key = normalizeWord(entry.word);
+      if (!key) continue;
+
+      const existing = merged.get(key);
+      if (existing) {
+        mergeInto(existing.entry, entry);
+        existing.sources.add(slug);
+        enriched++;
+      } else {
+        merged.set(key, { entry, sources: new Set([slug]) });
+        added++;
+      }
+    }
+
+    // Сохраняем unified.json
+    await this.saveUnifiedMap(merged);
+
+    // Сохраняем снэпшот
+    const step = log.length + 1;
+    const stepStr = String(step).padStart(2, "0");
+    const snapshotFile = `${UNIFIED_DIR}/step_${stepStr}_${slug}.json`;
+    const snapshotPath = path.resolve(process.cwd(), snapshotFile);
+    await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
+    await fs.copyFile(
+      path.resolve(process.cwd(), UNIFIED_FILE),
+      snapshotPath,
+    );
+
+    // Пишем лог
+    const logEntry: MergeLogEntry = {
+      step,
+      slug,
+      title: meta.title,
+      timestamp: new Date().toISOString(),
+      entriesFromDict: newEntries.length,
+      newWords: added,
+      enrichedWords: enriched,
+      totalUnifiedEntries: merged.size,
+      snapshotFile,
+    };
+    log.push(logEntry);
+    await this.writeMergeLog(log);
+
+    this.logger.log(
+      `step ${step}/${MERGE_ORDER.length} [${slug}]: +${added} новых, ${enriched} обогащено → итого ${merged.size}`,
+    );
+
+    // Следующий рекомендуемый словарь
+    const addedSlugs = new Set(log.map((e) => e.slug));
+    const nextSlug = MERGE_ORDER.find((s) => !addedSlugs.has(s)) ?? null;
+
+    return {
+      step,
+      slug,
+      title: meta.title,
+      entriesFromDict: newEntries.length,
+      newWords: added,
+      enrichedWords: enriched,
+      totalUnifiedEntries: merged.size,
+      snapshotFile,
+      nextRecommended: nextSlug,
+    };
+  }
+
+  /** Посмотреть лог слияния */
+  async getUnifiedLog() {
+    const log = await this.readMergeLog();
+    const addedSlugs = new Set(log.map((e) => e.slug));
+    const remaining = MERGE_ORDER.filter((s) => !addedSlugs.has(s));
+
+    return {
+      steps: log,
+      totalSteps: log.length,
+      remaining,
+      nextRecommended: remaining[0] ?? null,
+    };
+  }
+
+  /** Откатиться к указанному шагу (восстановить снэпшот) */
+  async rollback(step: number) {
+    const log = await this.readMergeLog();
+
+    if (step < 0 || step > log.length) {
+      throw new BadRequestException(
+        `Шаг ${step} не существует. Доступны: 0 (пустой) .. ${log.length}`,
+      );
+    }
+
+    const unifiedPath = path.resolve(process.cwd(), UNIFIED_FILE);
+
+    if (step === 0) {
+      // Откат до начала — пустой unified
+      try { await fs.unlink(unifiedPath); } catch { /* нет файла */ }
+    } else {
+      const target = log[step - 1];
+      const snapshotPath = path.resolve(process.cwd(), target.snapshotFile);
+      try {
+        await fs.copyFile(snapshotPath, unifiedPath);
+      } catch {
+        throw new BadRequestException(
+          `Снэпшот ${target.snapshotFile} не найден на диске`,
+        );
+      }
+    }
+
+    // Обрезаем лог до указанного шага
+    const trimmedLog = log.slice(0, step);
+    await this.writeMergeLog(trimmedLog);
+
+    const addedSlugs = new Set(trimmedLog.map((e) => e.slug));
+    const nextSlug = MERGE_ORDER.find((s) => !addedSlugs.has(s)) ?? null;
+
+    this.logger.log(
+      `Откат к шагу ${step}${step > 0 ? ` (${log[step - 1].slug})` : " (пустой)"}`,
+    );
+
+    return {
+      rolledBackTo: step,
+      currentEntries: step > 0 ? log[step - 1].totalUnifiedEntries : 0,
+      stepsRemoved: log.length - step,
+      nextRecommended: nextSlug,
+    };
+  }
+
+  /** Полный сброс: unified.json + снэпшоты + лог */
+  async resetSteps() {
+    // Удаляем unified.json
+    const unifiedPath = path.resolve(process.cwd(), UNIFIED_FILE);
+    try { await fs.unlink(unifiedPath); } catch { /* нет файла */ }
+
+    // Удаляем папку со снэпшотами
+    const unifiedDir = path.resolve(process.cwd(), UNIFIED_DIR);
+    try {
+      await fs.rm(unifiedDir, { recursive: true });
+    } catch { /* нет папки */ }
+
+    return { reset: true, message: "unified.json, снэпшоты и лог удалены" };
+  }
+
+  // -----------------------------------------------------------------------
   // Этап 3: Загрузка unified.json → БД (UnifiedEntry)
   // -----------------------------------------------------------------------
   async load() {
@@ -334,6 +541,23 @@ export class MergeService {
   // -----------------------------------------------------------------------
   // Внутренние методы
   // -----------------------------------------------------------------------
+
+  private async readMergeLog(): Promise<MergeLogEntry[]> {
+    const logPath = path.resolve(process.cwd(), MERGE_LOG_FILE);
+    try {
+      const raw = await fs.readFile(logPath, "utf-8");
+      return JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+
+  private async writeMergeLog(log: MergeLogEntry[]): Promise<void> {
+    const logPath = path.resolve(process.cwd(), MERGE_LOG_FILE);
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    await fs.writeFile(logPath, JSON.stringify(log, null, 2), "utf-8");
+  }
+
   private async parseDictionary(meta: DictionaryMeta) {
     const rawEntries = await this.readDictionaryJson(meta.file);
     const parser = getParser(meta.slug);

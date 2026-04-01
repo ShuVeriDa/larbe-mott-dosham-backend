@@ -25,8 +25,8 @@ export function parseAbdurashidovEntries(raws: RawDictEntry[]): ParsedEntry[] {
     }
 
     // Detail entry — parse and combine with pending headword
-    const entry = parseDetail(word, pendingHeadword);
-    if (entry) results.push(entry);
+    const entries = parseDetail(word, pendingHeadword);
+    results.push(...entries);
     pendingHeadword = null;
   }
 
@@ -37,10 +37,10 @@ export function parseAbdurashidovEntries(raws: RawDictEntry[]): ParsedEntry[] {
 // Парсинг detail-записи
 // ---------------------------------------------------------------------------
 
-function parseDetail(raw: string, headword: string | null): ParsedEntry | null {
+function parseDetail(raw: string, headword: string | null): ParsedEntry[] {
   // Strip leading whitespace/tabs and trailing \r\n
   const text = raw.replace(/^[\s\t]+/, "").replace(/[\r\n]+$/, "");
-  if (!text) return null;
+  if (!text) return [];
 
   const hasBold = text.includes("<b>");
 
@@ -53,7 +53,8 @@ function parseDetail(raw: string, headword: string | null): ParsedEntry | null {
 
   // ── RU→CE: no bold, just Chechen word + <i>class</i> ──
   // e.g. "дехархо <i>в,ю,б</i>" with headword = "ходатай"
-  return parseNoBoldDetail(text, headword);
+  const entry = parseNoBoldDetail(text, headword);
+  return entry ? [entry] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -63,60 +64,43 @@ function parseDetail(raw: string, headword: string | null): ParsedEntry | null {
 function parseBoldDetail(
   text: string,
   headword: string | null,
-): ParsedEntry | null {
-  const lastBoldEnd = text.lastIndexOf("</b>");
-  if (lastBoldEnd === -1) return null;
+): ParsedEntry[] {
+  // Split into bold segments: each <b>...</b>translation is a potential entry
+  const segments = splitBoldSegments(text);
+  if (segments.length === 0) return [];
 
-  const boldPart = text.substring(0, lastBoldEnd + 4);
-  const afterBold = text.substring(lastBoldEnd + 4).trim();
+  const first = segments[0];
+  const boldHasItalic = /<i>/.test(first.bold);
 
-  // Extract grammar from italic blocks inside bold
-  const grammarResult = extractGrammarFromItalic(boldPart);
-  const classInfo = extractClassFromText(boldPart + afterBold);
+  // ── RU→CE pattern: bold has NO <i> inside, and bold content doesn't start
+  // with "-" (which would be a Chechen suffix like "-девнехь") ──
+  // e.g. headword="министр", bold="<b>юстиции</b>", after="юстицин министр <i>в,ю,б</i>"
+  // Bold = Russian qualifier, after = Chechen translation + class
+  const firstBoldText = stripHtml(first.bold).trim();
+  if (!boldHasItalic && headword && !firstBoldText.startsWith("-")) {
+    return parseRuCeBoldDetail(segments, headword);
+  }
 
-  // Merge class info: grammar extraction may find plural class
+  // ── CE→RU pattern: bold has <i>grammar</i> inside ──
+  const grammarResult = extractGrammarFromItalic(first.bold);
+  const classInfo = extractClassFromText(first.bold + first.after);
+
   const mergedClass = {
     nounClass: grammarResult.classInfo.nounClass || classInfo.nounClass,
     nounClassPlural:
       grammarResult.classInfo.nounClassPlural || classInfo.nounClassPlural,
   };
 
-  // Extract the Chechen phrase from bold (strip class markers and grammar)
-  let chechenPhrase = boldPart;
-  // Remove all <i>...</i> blocks (class markers and grammar)
-  chechenPhrase = chechenPhrase.replace(/<i>[^<]*<\/i>/g, "");
-  chechenPhrase = stripHtml(chechenPhrase);
-  chechenPhrase = cleanText(chechenPhrase);
-  // Remove leading class letters outside <i>: "в,ю; ..." → "..."
-  chechenPhrase = chechenPhrase.replace(
-    /^[бвдйю]\s*(?:,\s*[бвдйю]\s*)*;\s*/,
-    "",
-  );
-  // Remove trailing semicolons left after stripping <i> blocks
-  chechenPhrase = chechenPhrase.replace(/\s*;\s*$/, "");
+  let chechenPhrase = extractChechenFromBold(first.bold);
 
-  // Build the word: headword + phrase from bold
-  let word = "";
-  if (headword && chechenPhrase) {
-    // If phrase starts with "-", concatenate directly: бакъ + -пачхьалкхана = бакъ-пачхьалкхана
-    if (chechenPhrase.startsWith("-")) {
-      word = headword + chechenPhrase;
-    } else {
-      word = headword + " " + chechenPhrase;
-    }
-  } else if (chechenPhrase) {
-    word = chechenPhrase;
-  } else if (headword) {
-    word = headword;
-  }
+  const word = buildWord(headword, chechenPhrase);
+  if (!word) return [];
 
-  if (!word) return null;
-
-  // Russian translation: after </b>, strip any remaining <i>class</i> and HTML
-  let translation = afterBold;
+  let translation = first.after;
   translation = translation.replace(/<i>[^<]*<\/i>/g, "");
   translation = stripHtml(translation);
   translation = cleanText(translation);
+  translation = translation.replace(/[;,]\s*$/, "").trim();
 
   const entry: ParsedEntry = {
     word,
@@ -128,7 +112,123 @@ function parseBoldDetail(
 
   if (grammarResult.grammar) entry.grammar = grammarResult.grammar;
 
-  return entry;
+  const results: ParsedEntry[] = [entry];
+
+  // Process subsequent bold segments as additional entries
+  for (let i = 1; i < segments.length; i++) {
+    const seg = segments[i];
+    const subPhrase = extractChechenFromBold(seg.bold);
+    const subWord = buildWord(headword, subPhrase);
+    if (!subWord) continue;
+
+    let subTranslation = seg.after;
+    subTranslation = subTranslation.replace(/<i>[^<]*<\/i>/g, "");
+    subTranslation = stripHtml(subTranslation);
+    subTranslation = cleanText(subTranslation);
+    subTranslation = subTranslation.replace(/[;,]\s*$/, "").trim();
+
+    const subClass = extractClassFromText(seg.bold + seg.after);
+
+    results.push({
+      word: subWord,
+      nounClass: subClass.nounClass || mergedClass.nounClass,
+      nounClassPlural: subClass.nounClassPlural || mergedClass.nounClassPlural,
+      meanings: subTranslation ? [{ translation: subTranslation }] : [],
+      domain: "law",
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Parses RU→CE bold detail entries.
+ * Pattern: headword = Russian word, bold = Russian qualifier, after = Chechen translation.
+ * e.g. headword="министр", <b>юстиции</b> юстицин министр <i>в,ю,б</i>
+ *   → word = "юстицин министр", translation = "министр юстиции"
+ */
+function parseRuCeBoldDetail(
+  segments: { bold: string; after: string }[],
+  headword: string,
+): ParsedEntry[] {
+  const results: ParsedEntry[] = [];
+
+  for (const seg of segments) {
+    const qualifier = stripHtml(seg.bold).trim();
+    const classInfo = extractClassFromText(seg.after);
+
+    // Chechen word: strip <i>class</i> and HTML from after-text
+    let chechenWord = seg.after.replace(/<i>[^<]*<\/i>/g, "");
+    chechenWord = stripHtml(chechenWord);
+    chechenWord = cleanText(chechenWord);
+    // Remove trailing class markers
+    chechenWord = chechenWord.replace(/\s+[бвдйю]$/, "");
+    chechenWord = chechenWord.replace(/[;,]\s*$/, "").trim();
+
+    if (!chechenWord) continue;
+
+    // Russian translation: headword + qualifier
+    const translation = qualifier
+      ? `${headword} ${qualifier}`.trim()
+      : headword;
+
+    results.push({
+      word: chechenWord,
+      nounClass: classInfo.nounClass,
+      nounClassPlural: classInfo.nounClassPlural,
+      meanings: [{ translation }],
+      domain: "law",
+    });
+  }
+
+  return results;
+}
+
+/** Splits text into segments of { bold: "<b>...</b>", after: "text before next <b>" } */
+function splitBoldSegments(
+  text: string,
+): { bold: string; after: string }[] {
+  const results: { bold: string; after: string }[] = [];
+  const re = /<b>[\s\S]*?<\/b>/g;
+  let match: RegExpExecArray | null;
+  const matches: { start: number; end: number; text: string }[] = [];
+  while ((match = re.exec(text)) !== null) {
+    matches.push({ start: match.index, end: match.index + match[0].length, text: match[0] });
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    const afterStart = m.end;
+    const afterEnd = i + 1 < matches.length ? matches[i + 1].start : text.length;
+    results.push({ bold: m.text, after: text.substring(afterStart, afterEnd).trim() });
+  }
+  return results;
+}
+
+function extractChechenFromBold(boldHtml: string): string {
+  let phrase = boldHtml;
+  // Remove all <i>...</i> blocks (class markers and grammar)
+  phrase = phrase.replace(/<i>[^<]*<\/i>/g, "");
+  phrase = stripHtml(phrase);
+  phrase = cleanText(phrase);
+  // Remove leading class letters outside <i>: "в,ю; ..." → "..."
+  phrase = phrase.replace(/^[бвдйю]\s*(?:,\s*[бвдйю]\s*)*;\s*/, "");
+  // Remove trailing class markers: "таронаш ю" → "таронаш"
+  phrase = phrase.replace(/\s+[бвдйю]\s*$/, "");
+  // Remove trailing semicolons
+  phrase = phrase.replace(/\s*;\s*$/, "");
+  return phrase;
+}
+
+function buildWord(headword: string | null, chechenPhrase: string): string {
+  if (headword && chechenPhrase) {
+    if (chechenPhrase.startsWith("-")) {
+      return headword + chechenPhrase;
+    }
+    return headword + " " + chechenPhrase;
+  }
+  if (chechenPhrase) return chechenPhrase;
+  if (headword) return headword;
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -145,6 +245,10 @@ function parseNoBoldDetail(
   let chechenWord = text.replace(/<i>[^<]*<\/i>/g, "");
   chechenWord = stripHtml(chechenWord);
   chechenWord = cleanText(chechenWord);
+  // Remove leading lone class marker: "ю руководство" → "руководство"
+  chechenWord = chechenWord.replace(/^[бвдйю]\s+/, "");
+  // Remove trailing lone class marker: "таронаш ю" → "таронаш"
+  chechenWord = chechenWord.replace(/\s+[бвдйю]$/, "");
 
   if (!chechenWord) return null;
 
@@ -278,25 +382,39 @@ function extractGrammarFromItalic(text: string): {
 
   const grammar: GrammarInfo = {};
 
-  // Second part: plural + class (e.g. "арзхой б")
+  // Second part: plural + class (e.g. "арзхой б") OR case forms directly
   if (semiParts.length >= 2 && semiParts[1]) {
     const pluralPart = semiParts[1].trim();
-    const pluralClassMatch = pluralPart.match(/^(.+?)\s+([бвдйю])\s*$/);
-    if (pluralClassMatch) {
-      grammar.plural = pluralClassMatch[1].trim();
-      const plCls = expandClass(pluralClassMatch[2]);
-      if (plCls) {
-        classInfo.nounClassPlural = plCls;
-        grammar.pluralClass = plCls;
+    const commaForms = pluralPart.split(",").map((f) => f.trim());
+
+    // If second part has 4 comma-separated words and no third part,
+    // these are case forms (gen, dat, erg, instr) without plural
+    // e.g. "в,ю,б; дуьхьалхочун, дуьхьалхочунна, дуьхьалхочо, дуьхьалхочуьнга"
+    if (commaForms.length === 4 && semiParts.length === 2) {
+      grammar.genitive = commaForms[0];
+      grammar.dative = commaForms[1];
+      grammar.ergative = commaForms[2];
+      grammar.instrumental = commaForms[3];
+    } else {
+      const pluralClassMatch = pluralPart.match(/^(.+?)\s+([бвдйю])\s*$/);
+      if (pluralClassMatch) {
+        grammar.plural = pluralClassMatch[1].trim();
+        const plCls = expandClass(pluralClassMatch[2]);
+        if (plCls) {
+          classInfo.nounClassPlural = plCls;
+          grammar.pluralClass = plCls;
+        }
+      } else if (pluralPart) {
+        grammar.plural = pluralPart;
       }
-    } else if (pluralPart) {
-      grammar.plural = pluralPart;
     }
   }
 
   // Third part: case forms (gen, dat, erg, instr)
   if (semiParts.length >= 3 && semiParts[2]) {
-    const forms = semiParts[2].split(",").map((f) => f.trim());
+    // Normalize stray dots to commas: "цатакхамо. цатакхаме" → "цатакхамо, цатакхаме"
+    const normalized = semiParts[2].replace(/\.\s+/g, ", ");
+    const forms = normalized.split(",").map((f) => f.trim());
     if (forms.length >= 1 && forms[0]) grammar.genitive = forms[0];
     if (forms.length >= 2 && forms[1]) grammar.dative = forms[1];
     if (forms.length >= 3 && forms[2]) grammar.ergative = forms[2];
