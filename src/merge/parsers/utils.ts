@@ -32,7 +32,16 @@ export function stripHtml(html: string): string {
 }
 
 export function stripStressMarks(text: string): string {
-  return text.normalize("NFD").replace(/\u0301/g, "").normalize("NFC");
+  return text
+    .normalize("NFD")
+    .replace(/[\u0301\u0303]/g, "") // acute accent + combining tilde
+    .normalize("NFC");
+}
+
+/** Заменяет combining tilde (U+0303) на combining acute accent (U+0301).
+ *  Используется для чеченских слов, где тильда в источнике обозначает ударение. */
+export function tildeToAcute(text: string): string {
+  return text.normalize("NFD").replace(/\u0303/g, "\u0301").normalize("NFC");
 }
 
 export function cleanText(text: string): string {
@@ -66,20 +75,23 @@ export function dedup(entries: RawDictEntry[]): RawDictEntry[] {
 // Извлечение примеров
 // -------------------------------------------------------------------------
 
-/** Извлекает пары <b>nah </b>ru из текста */
+/** Извлекает пары <b>nah </b>ru из текста.
+ *  ru может содержать <i>...</i> теги (домен, пояснения: <i>анат.</i>, <i>кому-л.</i>)
+ *  и буквенные подзначения: а) ...; б) ...; в) ... */
 export function extractExamples(
   text: string,
 ): { nah: string; ru: string }[] {
   const results: { nah: string; ru: string }[] = [];
-  const regex = /<b>([^<]+)<\/b>\s*([^<;◊]*)/g;
+  // Разрешаем ";" когда за ним идёт подзначение (а), б), в), ...)
+  const regex = /<b>([^<]+)<\/b>\s*((?:[^<;◊]|<i>[^<]*<\/i>|;\s*(?=[а-е]\)))*)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
-    const nah = cleanText(stripStressMarks(match[1]))
+    const nah = cleanText(tildeToAcute(match[1]))
       .replace(/[\s.,]+$/, "")
       .replace(/\d+$/, "")
       .replace(/[\s.,]+$/, "")
       .trim();
-    const ru = cleanText(stripStressMarks(match[2]))
+    const ru = cleanText(stripStressMarks(stripHtml(match[2])))
       .replace(/[.,]+$/, "")
       .trim();
     if (nah) results.push({ nah, ru });
@@ -96,14 +108,14 @@ export function extractDashExamples(
   const regex = /<b>([^<]+?)\s*[–\-]\s*<\/b>\s*([^<]*)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
-    const nah = cleanText(stripStressMarks(match[1]));
+    const nah = cleanText(tildeToAcute(match[1]));
     const ru = cleanText(stripStressMarks(match[2]));
     if (nah && ru) results.push({ nah, ru });
   }
   // Также формат: <b>nah</b> – ru (тире снаружи)
   const regex2 = /<b>([^<]+)<\/b>\s*[–\-]\s*([^<;]*)/g;
   while ((match = regex2.exec(text)) !== null) {
-    const nah = cleanText(stripStressMarks(match[1]));
+    const nah = cleanText(tildeToAcute(match[1]));
     const ru = cleanText(stripStressMarks(match[2]));
     if (nah && ru && !results.some((r) => r.nah === nah)) {
       results.push({ nah, ru });
@@ -148,6 +160,7 @@ const POS_MAP: Record<string, { ru: string; nah: string }> = {
 export function normalizePos(pos: string | undefined): string | undefined {
   if (!pos) return undefined;
   const base = pos
+    .replace(/\s+\./g, ".") // "нареч ." → "нареч."
     .replace(/\s+к$/, "")
     .replace(/\s+от$/, "")
     .replace(/\s+см\..*$/, "")
@@ -202,8 +215,80 @@ export function splitMeanings(text: string): string[] {
 // Стилевые метки (baisultanov)
 // -------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------
+// Доменные (тематические) пометы
+// -------------------------------------------------------------------------
+
+const DOMAIN_LABELS = [
+  "грам.",
+  "миф.",
+  "анат.",
+  "бот.",
+  "зоол.",
+  "мед.",
+  "лингв.",
+  "мат.",
+  "карт.",
+  "астр.",
+  "тех.",
+  "ист.",
+  "полит.",
+  "муз.",
+  "хим.",
+  "этн.",
+  "биол.",
+  "мор.",
+  "фольк.",
+  "рел.",
+  "эк.",
+  "вет.",
+  "перен.",
+  "уст.",
+  "разг.",
+  "шутл.",
+  "дет.",
+];
+
+/**
+ * Извлекает доменную помету из начала текста.
+ * Формат: <i>грам.</i> текст → { domain: "грам.", remaining: "текст" }
+ */
+export function extractDomain(text: string): {
+  domain: string | undefined;
+  remaining: string;
+} {
+  const m = text.match(/^<i>\s*([а-яё]+\.)\s*<\/i>\s*/);
+  if (m && DOMAIN_LABELS.includes(m[1])) {
+    return { domain: m[1], remaining: text.substring(m[0].length) };
+  }
+  return { domain: undefined, remaining: text };
+}
+
 const STYLE_LABELS = [
+  // Compound labels first (longer match takes priority)
+  "Прост.-разг.",
+  "Прост-разг.",
+  "Прост.-ирон.",
+  "Прост-ирон.",
+  "Прост.-шутл.",
+  "Прост-шутл.",
+  "Прост.-груб.",
+  "Прост-губ.",
+  "Прост-груб.",
+  "Шутл.-ирон.",
+  "Шутл-ирон.",
+  "Старин-диал.",
+  "Старин.-диал.",
+  "Религ-лит.",
+  "Религ.-лит.",
+  "Разг-прост.",
+  "Разг.-прост.",
+  "Презрит-ирон.",
+  "Презрит.-ирон.",
+  "Презр.-ирон.",
+  // Single labels
   "Прост.",
+  "Старинное.",
   "Старин.",
   "Устар.",
   "Уст.",
@@ -213,20 +298,38 @@ const STYLE_LABELS = [
   "Ирон.",
   "Жарг.",
   "Поэт.",
-  "Шутл.-ирон.",
-  "Шутл-ирон.",
   "Книжн.",
   "Бран.",
+  "Презрит.",
   "Презр.",
   "Пренебр.",
   "Груб.",
 ];
 
+/**
+ * Извлекает стилевую метку (или цепочку меток) из начала текста.
+ * Поддерживает несколько меток подряд через пробел: "Прост. Презр. Текст" → "Прост. Презр."
+ */
 export function extractStyleLabel(text: string): string | undefined {
-  for (const label of STYLE_LABELS) {
-    if (text.startsWith(label)) return label;
+  let result = "";
+  let remaining = text;
+
+  // Greedily consume all leading style labels
+  let found = true;
+  while (found) {
+    found = false;
+    const trimmed = remaining.trimStart();
+    for (const label of STYLE_LABELS) {
+      if (trimmed.startsWith(label)) {
+        result += (result ? " " : "") + label;
+        remaining = trimmed.substring(label.length);
+        found = true;
+        break;
+      }
+    }
   }
-  return undefined;
+
+  return result || undefined;
 }
 
 // -------------------------------------------------------------------------

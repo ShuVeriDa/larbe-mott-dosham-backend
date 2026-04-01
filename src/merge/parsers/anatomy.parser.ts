@@ -29,34 +29,39 @@ function parseAnatomyEntry(
 
   let remaining = cleanText(translate);
 
-  // Извлекаем латинское название: (Latin.name)
-  let latinName: string | undefined;
-  const latinMatch = remaining.match(/\(([^)]+)\)/);
-  if (latinMatch) {
-    latinName = latinMatch[1].trim();
-    remaining = remaining.replace(/\([^)]+\)/, "").trim();
-  }
-
-  // Извлекаем описание: <i>...</i>
+  // 1. Извлекаем описание: <i>...</i> → отдельное поле note
   let description: string | undefined;
   const descMatch = remaining.match(/<i>([^<]*)<\/i>/);
   if (descMatch) {
-    description = descMatch[1].trim();
+    description = descMatch[1].trim() || undefined;
     remaining = remaining.replace(/<i>[^<]*<\/i>/, "").trim();
   }
 
-  // Основной перевод — то, что осталось (без HTML)
+  // 2. Извлекаем латинское название: скобочная группа с латинскими буквами [a-zA-Z]
+  //    Поддерживаем один уровень вложенных скобок: (Costa (VӀӀӀ – X))
+  //    Берём последнюю подходящую группу — она всегда идёт после чеченских пояснений.
+  let latinName: string | undefined;
+  const parenRegex = /\(([^()]*(?:\([^()]*\))*[^()]*)\)/g;
+  const allParens: { full: string; content: string }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = parenRegex.exec(remaining)) !== null) {
+    allParens.push({ full: m[0], content: m[1] });
+  }
+  for (let i = allParens.length - 1; i >= 0; i--) {
+    if (/[a-zA-Z]/.test(allParens[i].content)) {
+      latinName = allParens[i].content.trim();
+      remaining = remaining.replace(allParens[i].full, "").trim();
+      break;
+    }
+  }
+
+  // 3. Основной перевод — то, что осталось (без HTML)
   const translation = stripHtml(remaining).replace(/\s+/g, " ").trim();
   if (!translation) return null;
 
-  // Собираем полный перевод с описанием
-  const fullTranslation = description
-    ? `${translation} — ${description}`
-    : translation;
-
   return {
     latinName,
-    meanings: [{ translation: fullTranslation }],
+    meanings: [{ translation, note: description }],
     domain: "anatomy",
   };
 }

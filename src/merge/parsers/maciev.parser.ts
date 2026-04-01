@@ -1,19 +1,16 @@
-import type {
-  GrammarInfo,
-  Meaning,
-  ParsedEntry,
-  RawDictEntry,
-} from "./types";
+import type { GrammarInfo, Meaning, ParsedEntry, RawDictEntry } from "./types";
 import {
   cleanText,
   dedup,
   expandClass,
+  extractDomain,
   extractExamples,
   extractPartOfSpeech,
   posToNah,
   splitMeanings,
   stripHtml,
   stripStressMarks,
+  tildeToAcute,
 } from "./utils";
 
 /**
@@ -51,13 +48,26 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
   }
 
   // 2. Извлекаем часть речи (но не деривационные пометы вроде "прич. от", "масд. от")
-  const partOfSpeech = extractPartOfSpeech(remaining);
-  if (partOfSpeech) {
-    // Убираем POS тег из remaining
-    remaining = remaining
-      .replace(/<i>[^<]*<\/i>\s*/, "")
-      .trim();
+  //    Паттерн "<i>прил. к </i><b>слово</b>" — это POS "прил." + деривационная ссылка,
+  //    поэтому сохраняем "к " в remaining, чтобы parseMeanings обработал как ссылку.
+  const posDerivMatch = remaining.match(
+    /^<i>((?:прил|прич|сущ|нареч)\.\s+к)\s*<\/i>/,
+  );
+  let partOfSpeech: string | undefined;
+  if (posDerivMatch) {
+    // POS + деривация: "прил. к" → POS = "прил.", оставляем <i>прил. к </i> для parseMeanings
+    partOfSpeech = normalizePos(posDerivMatch[1].replace(/\s+к$/, ""));
+  } else {
+    partOfSpeech = extractPartOfSpeech(remaining);
+    if (partOfSpeech) {
+      // Убираем POS тег из remaining
+      remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    }
   }
+
+  // 2.5. Извлекаем доменную помету (<i>грам.</i>, <i>миф.</i> и т.п.)
+  const { domain, remaining: afterDomain } = extractDomain(remaining);
+  remaining = afterDomain;
 
   // 3. Разделяем основной текст и фразеологизмы (◊)
   let mainText = remaining;
@@ -76,10 +86,12 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
 
   return {
     word: stripStressMarks(stripHtml(word)),
-    wordAccented: word !== wordAccented ? stripHtml(wordAccented) : undefined,
+    wordAccented:
+      word !== wordAccented ? tildeToAcute(stripHtml(wordAccented)) : undefined,
     partOfSpeech: normalizePos(partOfSpeech),
     partOfSpeechNah: posToNah(normalizePos(partOfSpeech)),
     nounClass,
+    domain: domain || undefined,
     grammar: grammar && Object.keys(grammar).length > 0 ? grammar : undefined,
     meanings,
     phraseology: phraseology?.length ? phraseology : undefined,
@@ -120,14 +132,13 @@ function parseGrammarBlock(block: string): {
   // Извлекаем множественное число: мн.</i> XXXX
   const pluralMatch = block.match(/мн\.<\/i>\s*([^,<]+)/);
   if (pluralMatch) {
-    grammar.plural = cleanText(stripStressMarks(pluralMatch[1]));
+    grammar.plural = cleanText(tildeToAcute(pluralMatch[1]));
   }
 
   // Класс мн. числа — последний <i>CLASS</i>
   if (classMatches && classMatches.length > 1) {
-    const lastClass = classMatches[classMatches.length - 1].match(
-      /<i>([бвдй])/,
-    );
+    const lastClass =
+      classMatches[classMatches.length - 1].match(/<i>([бвдй])/);
     if (lastClass) {
       grammar.pluralClass = expandClass(lastClass[1]);
     }
@@ -140,22 +151,42 @@ function parseGrammarBlock(block: string): {
     .trim();
 
   const forms = plain
-    .split(",")
-    .map((f) => f.trim())
+    .split(/[,;]/)
+    .map((f) =>
+      f
+        .trim()
+        .replace(/\s+[бвдй]у$/, "") // убираем классные показатели ду/бу/ву/йу
+        .trim(),
+    )
     .filter((f) => f.length > 0);
 
   if (nounClass || grammar.plural) {
     // Существительное: genitive, dative, ergative, instrumental
-    if (forms.length >= 1) grammar.genitive = stripStressMarks(forms[0]);
-    if (forms.length >= 2) grammar.dative = stripStressMarks(forms[1]);
-    if (forms.length >= 3) grammar.ergative = stripStressMarks(forms[2]);
-    if (forms.length >= 4) grammar.instrumental = stripStressMarks(forms[3]);
-  } else if (forms.length >= 2 && forms.length <= 3) {
-    // Глагол: present, past, participle
-    grammar.verbPresent = stripStressMarks(forms[0]);
-    grammar.verbPast = stripStressMarks(forms[1]);
-    if (forms.length >= 3)
-      grammar.verbParticiple = stripStressMarks(forms[2]);
+    if (forms.length >= 1) grammar.genitive = tildeToAcute(forms[0]);
+    if (forms.length >= 2) grammar.dative = tildeToAcute(forms[1]);
+    if (forms.length >= 3) grammar.ergative = tildeToAcute(forms[2]);
+    if (forms.length >= 4) grammar.instrumental = tildeToAcute(forms[3]);
+  } else if (forms.length >= 2) {
+    // Глагол: словарная запись даёт 3 формы: настоящее, очевидно-прошедшее,
+    // прошедшее совершенное (+ иногда причастие будущего)
+    // Отделяем грамм. пометы ("наст. вр. нет") от реальных форм
+    const hasNoPresentNote = forms.some((f) => /наст/.test(f));
+    const verbForms = forms.filter((f) => !/\./.test(f));
+
+    if (hasNoPresentNote) {
+      // Настоящего времени нет — формы начинаются с прошедшего
+      if (verbForms.length >= 1) grammar.verbPast = tildeToAcute(verbForms[0]);
+      if (verbForms.length >= 2)
+        grammar.verbParticiple = tildeToAcute(verbForms[1]);
+    } else {
+      if (verbForms.length >= 1)
+        grammar.verbPresent = tildeToAcute(verbForms[0]);
+      if (verbForms.length >= 2) grammar.verbPast = tildeToAcute(verbForms[1]);
+      if (verbForms.length >= 3)
+        grammar.verbParticiple = tildeToAcute(verbForms[2]);
+      if (verbForms.length >= 4)
+        grammar.verbFutureParticiple = tildeToAcute(verbForms[3]);
+    }
   }
 
   return { grammar, nounClass };
@@ -164,11 +195,9 @@ function parseGrammarBlock(block: string): {
 function parseMeanings(text: string): Meaning[] {
   const stripped = cleanText(text);
 
-  // Деривационные/ссылочные пометы (<i>масд. от </i>, <i>см.</i> и т.п.)
+  // Деривационные/ссылочные пометы (<i>масд. от </i>, <i>прил. к </i>, <i>см.</i> и т.п.)
   // обрабатываем до splitMeanings, чтобы нумерованные подзначения не разбились
-  const derivMatch = stripped.match(
-    /^<i>([^<]*(?:\s+от|см\.))\s*<\/i>\s*/,
-  );
+  const derivMatch = stripped.match(/^<i>([^<]*(?:\s+от|\s+к|см\.))\s*<\/i>\s*/);
   if (derivMatch) {
     const derivNote = derivMatch[1].trim();
     const afterNote = stripped.substring(derivMatch[0].length);
@@ -196,7 +225,7 @@ function extractSourceWord(
   const sourceMatch = text.match(/^<b>([^<]+)<\/b>\s*/);
   if (!sourceMatch) return { note: derivNote, remaining: text };
 
-  const sourceWord = cleanText(stripStressMarks(sourceMatch[1]))
+  const sourceWord = cleanText(tildeToAcute(sourceMatch[1]))
     .replace(/[\s.,;]+$/, "")
     .replace(/\d+$/, "")
     .replace(/[\s.,;]+$/, "")
@@ -206,43 +235,105 @@ function extractSourceWord(
   return { note, remaining };
 }
 
+/**
+ * Извлекает пословицы/поговорки — блоки вида:
+ *   <b>нах1 </b>– <b>нах2 </b><i>погов.</i> русский перевод;
+ *   <b>нах1 </b>текст <b>нах2 </b><i>посл.</i> русский перевод;
+ * Возвращает найденные примеры и текст без пословиц.
+ */
+function extractProverbs(text: string): {
+  examples: { nah: string; ru: string }[];
+  cleaned: string;
+} {
+  const examples: { nah: string; ru: string }[] = [];
+
+  // Чеченские блоки (bold + возможный текст между ними) + <i>погов./посл.</i> + русский текст
+  // Русский текст может содержать <i>...</i> теги (напр. <i>замуж</i>, <i>букв.</i>)
+  const cleaned = text.replace(
+    /((?:<b>[^<]+<\/b>[^<;]*)+)<i>\s*(?:погов|посл)\.\s*<\/i>\s*((?:[^<;]|<i>[^<]*<\/i>)*)/g,
+    (_match, boldBlock: string, ruRaw: string) => {
+      const nah = cleanText(tildeToAcute(stripHtml(boldBlock)))
+        .replace(/[\s.,]+$/, "")
+        .trim();
+
+      const ru = stripStressMarks(
+        stripHtml(ruRaw)
+          .replace(/[.,;]+$/, "")
+          .trim(),
+      );
+
+      if (nah && ru) {
+        examples.push({ nah, ru });
+      }
+
+      return ""; // Убираем блок пословицы из текста
+    },
+  );
+
+  return { examples, cleaned };
+}
+
 /** Парсит обычные (не-деривационные) значения */
 function parseNormalMeanings(stripped: string): Meaning[] {
   const meaningTexts = splitMeanings(stripped);
 
   return meaningTexts.map((mt) => {
+    let text = mt;
+
+    // POS на уровне значения (напр. "1. <i>прил.</i> дикий 2. <i>нареч.</i> дико")
+    const meaningPos = extractPartOfSpeech(text);
+    if (meaningPos) {
+      text = text.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    }
+
     // Деривационная помета внутри нумерованного значения (напр. "1) <i>потенц. от </i>...")
-    const innerDerivMatch = mt.match(
-      /^<i>([^<]*(?:\s+от|см\.))\s*<\/i>\s*/,
-    );
+    const innerDerivMatch = text.match(/^<i>([^<]*(?:\s+от|\s+к|см\.))\s*<\/i>\s*/);
     if (innerDerivMatch) {
       const derivNote = innerDerivMatch[1].trim();
-      const afterNote = mt.substring(innerDerivMatch[0].length);
+      const afterNote = text.substring(innerDerivMatch[0].length);
       const { note, remaining } = extractSourceWord(derivNote, afterNote);
 
       if (remaining) {
         const translation = stripStressMarks(
-          stripHtml(remaining).replace(/[;.]+$/, "").trim(),
+          stripHtml(remaining)
+            .replace(/[;.]+$/, "")
+            .trim(),
         );
-        return { translation, note };
+        return {
+          translation, note,
+          partOfSpeech: meaningPos || undefined,
+          partOfSpeechNah: posToNah(meaningPos) || undefined,
+        };
       }
-      return { translation: "", note };
+      return {
+        translation: "", note,
+        partOfSpeech: meaningPos || undefined,
+        partOfSpeechNah: posToNah(meaningPos) || undefined,
+      };
     }
 
-    const examples = extractExamples(mt);
+    // Извлекаем пословицы (погов.) до обычных примеров
+    const { examples: proverbExamples, cleaned: withoutProverbs } =
+      extractProverbs(text);
 
-    // Перевод — текст без примеров (<b>...</b>...)
-    let translation = mt
-      .replace(/<b>[^<]*<\/b>[^<;◊]*/g, "")
+    const examples = extractExamples(withoutProverbs);
+    const allExamples = [...examples, ...proverbExamples];
+
+    // Перевод — текст без примеров (<b>...</b>...) и пословиц
+    let translation = withoutProverbs
+      .replace(/<b>[^<]*<\/b>(?:[^<;◊]|<i>[^<]*<\/i>|;\s*(?=[а-е]\)))*/g, "")
       .replace(/<[^>]*>/g, "")
       .replace(/\s+/g, " ")
-      .replace(/[;.]+$/, "")
+      .replace(/(?:\s*;\s*){2,}/g, "; ") // схлопываем "; ;" → ";"
+      .replace(/[;.\s]+$/, "")
       .trim();
     translation = stripStressMarks(translation);
 
     return {
-      translation: translation || stripHtml(stripStressMarks(mt)),
-      examples: examples.length > 0 ? examples : undefined,
+      translation: translation || stripHtml(stripStressMarks(text)),
+      partOfSpeech: meaningPos || undefined,
+      partOfSpeechNah: posToNah(meaningPos) || undefined,
+      examples: allExamples.length > 0 ? allExamples : undefined,
     };
   });
 }
@@ -250,6 +341,7 @@ function parseNormalMeanings(stripped: string): Meaning[] {
 function normalizePos(pos: string | undefined): string | undefined {
   if (!pos) return undefined;
   const base = pos
+    .replace(/\s+\./g, ".") // "нареч ." → "нареч."
     .replace(/\s+к$/, "")
     .replace(/\s+от$/, "")
     .replace(/\s+см\..*$/, "")
@@ -263,11 +355,11 @@ function normalizePos(pos: string | undefined): string | undefined {
     "нареч.": "нареч.",
     "числ.": "числ.",
     "мест.": "мест.",
-    "союз": "союз",
-    "предлог": "предлог",
-    "послелог": "послелог",
+    союз: "союз",
+    предлог: "предлог",
+    послелог: "послелог",
     "межд.": "межд.",
-    "частица": "частица",
+    частица: "частица",
     "дееприч.": "дееприч.",
     "собир.": "собир.",
     "звукоподр.": "звукоподр.",

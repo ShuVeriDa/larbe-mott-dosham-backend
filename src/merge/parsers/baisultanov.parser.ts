@@ -36,9 +36,7 @@ import {
  *   - Встроенные подстатьи: `<b>Слово.</b> Определение`
  *   - Нумерованные значения: `1.текст 2.текст`
  */
-export function parseBaisultanovEntries(
-  raws: RawDictEntry[],
-): ParsedEntry[] {
+export function parseBaisultanovEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const unique = dedup(raws);
   const results: ParsedEntry[] = [];
 
@@ -76,6 +74,9 @@ function parseBaisultanovEntry(raw: RawDictEntry): ParsedEntry | null {
 
   return {
     word: parsed.word,
+    variants: parsed.variants,
+    partOfSpeech: parsed.isInterjection ? "межд." : undefined,
+    partOfSpeechNah: parsed.isInterjection ? "айдардош" : undefined,
     nounClass: parsed.nounClass,
     grammar: parsed.grammar,
     styleLabel: translateResult.styleLabel,
@@ -96,6 +97,8 @@ interface ParsedWord {
   word: string;
   nounClass?: string;
   grammar?: GrammarInfo;
+  variants?: string[];
+  isInterjection?: boolean;
 }
 
 /** Class marker letters that appear in parentheses */
@@ -116,33 +119,155 @@ function parseWord(raw: string): ParsedWord {
   // Strip stray leading parenthesis (data error, e.g. "(Цхар (-ш)")
   text = text.replace(/^\((?=[А-ЯЁа-яёӀ])/, "");
 
-  // Extract parenthetical part — find the LAST balanced parenthetical group
-  let parenContent: string | undefined;
-  const parenMatch = text.match(/^(.+?)\s*\(([^)]*)\)\s*\.?\s*$/);
-  if (parenMatch) {
-    text = parenMatch[1].trim();
-    parenContent = parenMatch[2].trim();
+  // Strip square brackets and their content: "[ласто; озо, етта и.д1.кх.]", "[кап]"
+  text = text.replace(/\s*\[[^\]]*\]/g, "");
+
+  // Detect interjection marker (!)
+  const isInterjection = /\(\s*!\s*\)/.test(text);
+  if (isInterjection) {
+    text = text.replace(/\s*\(\s*!\s*\)/g, "").trim();
   }
 
-  // Also handle trailing dash or junk
-  text = text.replace(/\s*–\s*$/, "").trim();
+  // Truncate at definition text leaking into word field.
+  // Pattern: after a closing paren + optional period, or after word without parens,
+  // a period/colon followed by text (Cyrillic or style label) indicates definition leak.
+  // e.g. "Петар (-ш).Старин. Квартира" → "Петар (-ш)"
+  // e.g. "Уойт (уойтӀ)Что и уой" → "Уойт (уойтӀ)"
+  // e.g. "Тахвала (й, д, б). ФЕ: тахваьлла" → "Тахвала (й, д, б)"
+  // e.g. "Санкхала. Сансара" → "Санкхала"
+  // Look for "). " or ")." or ") Text" or just ". Text" after the word portion
+  const defLeakMatch = text.match(
+    /^(.+?\))\s*\.?\s*(?:[А-ЯЁа-яёӀA-Za-z].+)$/,
+  );
+  if (defLeakMatch) {
+    text = defLeakMatch[1].trim();
+  } else {
+    // No parens case: "Санкхала. Сансара" — truncate at first ". " followed by text
+    const dotLeakMatch = text.match(
+      /^([А-ЯЁа-яёӀ\-]+(?:\s*\([^)]*\))?)\.\s+[А-ЯЁа-яёӀ]/,
+    );
+    if (dotLeakMatch) {
+      text = dotLeakMatch[1].trim();
+    }
+  }
 
-  const word = cleanText(stripHtml(text));
+  // Extract ALL parenthetical groups from the text.
+  // Handles: "Тафсир (тапсир) (-аш)", "Адам-йилбаз (адаман йилбаз, лилбаз (-аш))"
+  const parenGroups: string[] = [];
+  let wordPart = text;
+
+  // Peel off parenthetical groups from the right, handling nesting.
+  // Strategy: find last ")", walk left to find its matching "(", strip that group, repeat.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const trimmed = wordPart.replace(/[\s.\-–]*$/, "");
+
+    // Find the last closing paren
+    const lastClose = trimmed.lastIndexOf(")");
+    if (lastClose > 0) {
+      // Walk left from lastClose to find the matching opening paren
+      let depth = 0;
+      let openIdx = -1;
+      for (let i = lastClose; i >= 0; i--) {
+        if (trimmed[i] === ")") depth++;
+        else if (trimmed[i] === "(") {
+          depth--;
+          if (depth === 0) {
+            openIdx = i;
+            break;
+          }
+        }
+      }
+      if (openIdx > 0) {
+        const content = trimmed.substring(openIdx + 1, lastClose).trim();
+        const remaining = trimmed.substring(0, openIdx).trim();
+        // Strip if what comes after the close paren is punctuation/whitespace,
+        // or variant forms after ";", ",", ":", or "-" (e.g. "); кӀунс", "), манкӀур", ")-аьлла")
+        const afterClose = trimmed.substring(lastClose + 1).trim();
+        if (!afterClose || /^[.\s\-–;:,]/.test(afterClose)) {
+          parenGroups.unshift(content);
+          wordPart = remaining;
+          changed = true;
+        }
+      }
+    }
+
+    // Handle unclosed parenthesis (no closing paren found above):
+    // "Доьхьа (-наш", "Хьавола (хьа", "Курчак (вала: (й, д, б"
+    if (!changed) {
+      const firstOpen = wordPart.indexOf("(");
+      if (firstOpen > 0 && !wordPart.includes(")")) {
+        const before = wordPart.substring(0, firstOpen).trim();
+        const content = wordPart.substring(firstOpen + 1).trim();
+        if (before && /[А-ЯЁа-яёӀ]/.test(before) && content) {
+          parenGroups.unshift(content);
+          wordPart = before;
+          changed = true;
+        }
+      }
+    }
+  }
+
+  // Handle stray closing parens without opening: "Кхосту уш; -аш)", "Хьахьуриг –рш)"
+  if (wordPart.includes(")") && !wordPart.includes("(")) {
+    wordPart = wordPart.replace(/\)\s*$/, "").trim();
+    // Content before the stray close paren might contain suffix info after semicolon
+    const semiMatch = wordPart.match(/^(.+?)\s*[;,]\s*(-?[а-яёА-ЯЁӀ]+.*)$/);
+    if (semiMatch) {
+      wordPart = semiMatch[1].trim();
+      parenGroups.push(semiMatch[2].trim());
+    }
+  }
+
+  // Extract variant forms after ";", ","  or ":" at the end before stripping
+  // e.g. "КӀумс; кӀунс" → variant "кӀунс", "Манкурт, манкӀур" → variant "манкӀур"
+  const trailingVariants: string[] = [];
+  const variantStripMatch = wordPart.match(/^(.+?)\s*[;:,]\s+([а-яёА-ЯЁӀ].*)$/);
+  if (variantStripMatch) {
+    wordPart = variantStripMatch[1].trim();
+    // Split multiple variants by comma/semicolon
+    const extraVars = variantStripMatch[2].split(/\s*[;,]\s*/);
+    for (const v of extraVars) {
+      const cleaned = v.trim();
+      if (cleaned && /[а-яёА-ЯЁӀ]{2,}/.test(cleaned)) {
+        trailingVariants.push(cleaned);
+      }
+    }
+  }
+
+  // Clean trailing junk
+  wordPart = wordPart.replace(/\s*–\s*$/, "").trim();
+  wordPart = wordPart.replace(/\s*,\s*$/, "").trim();
+
+  const word = cleanText(stripHtml(wordPart));
   if (!word) return { word: "" };
 
   let nounClass: string | undefined;
   let grammar: GrammarInfo | undefined;
+  const variants: string[] = [...trailingVariants];
 
-  if (parenContent) {
-    const parenResult = parseParenContent(parenContent, word);
-    nounClass = parenResult.nounClass;
-    grammar = parenResult.grammar;
+  // Process all parenthetical groups: merge their results
+  for (const content of parenGroups) {
+    const parenResult = parseParenContent(content, word);
+    if (parenResult.nounClass && !nounClass) {
+      nounClass = parenResult.nounClass;
+    }
+    if (parenResult.grammar) {
+      grammar = grammar ?? {};
+      if (parenResult.grammar.plural) grammar.plural = parenResult.grammar.plural;
+    }
+    if (parenResult.variants) {
+      variants.push(...parenResult.variants);
+    }
   }
 
   return {
     word,
     nounClass,
     grammar: grammar && Object.keys(grammar).length > 0 ? grammar : undefined,
+    variants: variants.length > 0 ? variants : undefined,
+    isInterjection: isInterjection || undefined,
   };
 }
 
@@ -162,29 +287,77 @@ function parseWord(raw: string): ParsedWord {
  *   - `!` → interjection marker, skip
  *   - `гарнехьа` → variant form in parens, skip
  */
+interface ParenResult {
+  nounClass?: string;
+  grammar?: GrammarInfo;
+  variants?: string[];
+}
+
 function parseParenContent(
   content: string,
   headword: string,
-): { nounClass?: string; grammar?: GrammarInfo } {
+): ParenResult {
   let nounClass: string | undefined;
   const grammar: GrammarInfo = {};
+  const variants: string[] = [];
 
   // Strip semicolons — some entries have ";": "Парз (-аш; фарз –фарзаш: ...)"
   // Take only the first segment before ";" for primary plural
   const semiParts = content.split(";");
   const primaryContent = semiParts[0].trim();
 
+  // Additional segments after ";" may contain variant forms
+  for (let i = 1; i < semiParts.length; i++) {
+    const extra = semiParts[i].trim();
+    if (extra && /[а-яёА-ЯЁӀ]{2,}/.test(extra) && !isClassMarkerPart(extra)) {
+      // Clean suffix markers
+      const cleaned = extra.replace(/^[–\-]\s*/, "").trim();
+      if (cleaned) variants.push(cleaned);
+    }
+  }
+
   // Split by colon — can have "stem: suffix", "suffix: class", "class: suffix", etc.
   const colonParts = primaryContent.split(":").map((p) => p.trim());
 
   if (colonParts.length === 1) {
     // No colon — simple case
-    const part = colonParts[0];
-    if (isClassMarkerPart(part)) {
-      nounClass = extractClassFromPart(part);
+    // Try to split by commas to handle mixed content like "баӀбевларш, й, д"
+    const commaParts = colonParts[0].split(",").map((p) => p.trim()).filter(Boolean);
+
+    if (commaParts.length > 1) {
+      // Multiple comma-separated tokens — classify each
+      const classTokens: string[] = [];
+      for (const token of commaParts) {
+        if (isClassMarkerPart(token)) {
+          const cls = extractClassFromPart(token);
+          if (cls) classTokens.push(cls);
+        } else {
+          const plural = extractPluralForm(token, headword);
+          if (plural) {
+            grammar.plural = plural;
+          } else if (isVariantForm(token, headword)) {
+            variants.push(token);
+          }
+        }
+      }
+      // Merge all class tokens, deduplicating
+      if (classTokens.length > 0) {
+        const allClasses = classTokens.flatMap((c) => c.split("/"));
+        const unique = Array.from(new Set(allClasses));
+        nounClass = unique.join("/");
+      }
     } else {
-      const plural = extractPluralForm(part, headword);
-      if (plural) grammar.plural = plural;
+      const part = colonParts[0];
+      if (isClassMarkerPart(part)) {
+        nounClass = extractClassFromPart(part);
+      } else {
+        const plural = extractPluralForm(part, headword);
+        if (plural) {
+          grammar.plural = plural;
+        } else if (isVariantForm(part, headword)) {
+          variants.push(part);
+        }
+      }
     }
   } else if (colonParts.length >= 2) {
     // Two+ colon-separated parts — identify each part's role
@@ -206,7 +379,7 @@ function parseParenContent(
         // If we have an alternate stem, build plural from it
         const stem = alternateStem ?? headword;
         if (PLURAL_SUFFIXES_RE.test(suffix) || suffix.length <= 4) {
-          grammar.plural = stem + suffix;
+          grammar.plural = joinStemSuffix(stem, suffix);
         }
         continue;
       }
@@ -214,7 +387,7 @@ function parseParenContent(
       // Check if bare suffix (e.g. "аш" in "Ӏавдал: аш")
       if (/^[а-яёА-ЯЁӀ]{1,4}$/.test(part) && PLURAL_SUFFIXES_RE.test(part)) {
         const stem = alternateStem ?? headword;
-        grammar.plural = stem + part;
+        grammar.plural = joinStemSuffix(stem, part);
         continue;
       }
 
@@ -230,12 +403,41 @@ function parseParenContent(
         continue;
       }
     }
+
+    // If alternateStem was set but never consumed as plural base, it's a variant
+    if (alternateStem && !grammar.plural) {
+      variants.push(alternateStem);
+    }
   }
 
   return {
     nounClass,
     grammar: Object.keys(grammar).length > 0 ? grammar : undefined,
+    variants: variants.length > 0 ? variants : undefined,
   };
+}
+
+/**
+ * Checks if a parenthetical part is a variant form (not plural, not class marker).
+ * Variant forms: "ошхьада", "аввабин-ламаз", "буьрса", "боли-лу"
+ * NOT variant: "!", abbreviations, single letters
+ */
+function isVariantForm(part: string, headword: string): boolean {
+  const trimmed = part.trim();
+  if (!trimmed || trimmed.length < 2) return false;
+  // Skip punctuation-only (!, ?)
+  if (/^[!?.,;]+$/.test(trimmed)) return false;
+  // Skip grammatical abbreviations
+  if (/и\.кх\.|д1\.|кх\.|и\.д1/.test(trimmed)) return false;
+  // Skip Russian text (variant forms should be Chechen)
+  if (/только|во мн|напр|с др|классн|показател/.test(trimmed)) return false;
+  // Must contain Cyrillic
+  if (!/[а-яёА-ЯЁӀ]{2,}/.test(trimmed)) return false;
+  // Skip if it looks like a class marker
+  if (isClassMarkerPart(trimmed)) return false;
+  // Skip if it's the same as headword
+  if (trimmed.toLowerCase() === headword.toLowerCase()) return false;
+  return true;
 }
 
 /** Full class name patterns: "ду", "ву", "бу", "йу" */
@@ -250,9 +452,7 @@ function isClassMarkerPart(part: string): boolean {
   if (tokens.length === 0) return false;
 
   // Every token must be either a short class letter or a full class name
-  return tokens.every(
-    (t) => CLASS_LETTERS.has(t) || FULL_CLASS_NAMES.has(t),
-  );
+  return tokens.every((t) => CLASS_LETTERS.has(t) || FULL_CLASS_NAMES.has(t));
 }
 
 /** Extracts the first class from a class marker part */
@@ -263,18 +463,42 @@ function extractClassFromPart(part: string): string | undefined {
     .map((t) => t.trim().toLowerCase())
     .filter(Boolean);
 
+  const classes: string[] = [];
   for (const t of tokens) {
+    let cls: string | undefined;
     // Full class name (ду, ву, бу, йу)
-    if (FULL_CLASS_NAMES.has(t)) return t;
+    if (FULL_CLASS_NAMES.has(t)) cls = t;
     // Short class letter (в, й, д, б, ю)
-    if (CLASS_LETTERS.has(t)) return expandClass(t);
+    else if (CLASS_LETTERS.has(t)) cls = expandClass(t);
+
+    if (cls && !classes.includes(cls)) classes.push(cls);
   }
 
-  return undefined;
+  return classes.length > 0 ? classes.join("/") : undefined;
 }
 
 /** Common Chechen plural suffixes */
 const PLURAL_SUFFIXES_RE = /(?:наш|аш|ий|рш|ш|й)$/;
+
+/**
+ * Склеивает основу и суффикс с учётом перекрытия.
+ * В чеченской лексикографии `-рш` при слове `Авиакхийсар` означает
+ * `Авиакхийсарш`, а не `Авиакхийсаррш` — суффикс перекрывает конец основы.
+ *
+ * Ищем максимальное совпадение конца stem с началом suffix (case-insensitive).
+ */
+function joinStemSuffix(stem: string, suffix: string): string {
+  const stemLow = stem.toLowerCase();
+  const suffixLow = suffix.toLowerCase();
+  const maxOverlap = Math.min(stem.length, suffix.length);
+
+  for (let ov = maxOverlap; ov >= 1; ov--) {
+    if (stemLow.endsWith(suffixLow.substring(0, ov))) {
+      return stem + suffix.substring(ov);
+    }
+  }
+  return stem + suffix;
+}
 
 /**
  * Extracts a plural form from a parenthetical segment.
@@ -286,10 +510,7 @@ const PLURAL_SUFFIXES_RE = /(?:наш|аш|ий|рш|ш|й)$/;
  *
  * Skips non-plural content: variant forms, verb phrases, abbreviations, etc.
  */
-function extractPluralForm(
-  part: string,
-  headword: string,
-): string | undefined {
+function extractPluralForm(part: string, headword: string): string | undefined {
   const trimmed = part.trim();
   if (!trimmed) return undefined;
 
@@ -312,7 +533,7 @@ function extractPluralForm(
     const suffix = suffixMatch[1].trim();
     // Only treat as plural suffix if it looks like one
     if (PLURAL_SUFFIXES_RE.test(suffix) || suffix.length <= 4) {
-      return headword + suffix;
+      return joinStemSuffix(headword, suffix);
     }
     return undefined;
   }
@@ -420,18 +641,56 @@ function extractMainCitationText(citationPart: string): string {
 function parseMeanings(text: string): Meaning[] {
   if (!text) return [{ translation: "" }];
 
+  // Strip embedded sub-entries from definition text before cleaning.
+  // In Baisultanov, <b> tags in the definition part mark sub-entries or related words:
+  //   <b>Мерга мийист </b>(Мерга мийист). Мерг - олень...
+  //   // <b>Бенцахетар (-ш).</b> Безразличие.
+  //   См.: <b>Бур-бур-аьлла.</b>
+  //   <b>яха (б)</b>. Колдовать... (related verb form)
+  //
+  // Strategy: remove <b>Word</b> + following sub-entry text up to next sub-entry or end,
+  // but preserve text that looks like a definition (starts with Russian definition after period).
+  let cleanedText = text;
+
+  // Remove "См.: <b>...</b>..." cross-references
+  cleanedText = cleanedText.replace(/См\.:\s*<b>[^<]*<\/b>[^<]*/g, "").trim();
+
+  // Remove "// <b>...</b>" sub-entry markers (only the bold tag and //, keep text after)
+  cleanedText = cleanedText.replace(/\/\/\s*<b>[^<]*<\/b>\s*/g, "").trim();
+
+  // Remove sub-entries: <b>Word </b>(Word) ... up to end or next sentence.
+  // These are toponymic/encyclopedic sub-entries from Сулейманов.
+  // Pattern: <b>Word </b> followed by parenthetical and explanatory text
+  cleanedText = cleanedText
+    .replace(/<b>[^<]+<\/b>\s*\([^)]*\)[^<]*/g, "")
+    .trim();
+
+  // Remove remaining <b>Word.</b> patterns (period inside bold = sub-entry header)
+  cleanedText = cleanedText
+    .replace(/<b>[^<]+\.<\/b>\s*/g, "")
+    .trim();
+
   // Clean HTML, but preserve text
-  const cleaned = stripHtml(cleanText(text));
+  const cleaned = stripHtml(cleanText(cleanedText));
   if (!cleaned) return [{ translation: "" }];
 
   // Split by numbered meanings: "1.text 2.text" or "1) text 2) text"
   const parts = splitMeanings(cleaned);
 
-  return parts.map((part) => ({
-    translation: part
-      .replace(/[;.]+$/, "")
-      .trim(),
-  }));
+  return parts.map((part) => {
+    let translation = part.replace(/[;.]+$/, "").trim();
+
+    // Extract per-meaning style label: "Устар. Сторожевой отряд" → styleLabel in note
+    const label = extractStyleLabel(translation);
+    if (label) {
+      translation = translation.substring(label.length).trim();
+    }
+
+    return {
+      translation,
+      ...(label ? { note: label } : {}),
+    };
+  });
 }
 
 // -------------------------------------------------------------------------

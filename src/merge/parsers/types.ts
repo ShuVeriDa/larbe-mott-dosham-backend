@@ -1,6 +1,7 @@
 export interface ParsedEntry {
   word: string;
   wordAccented?: string;
+  variants?: string[]; // вариантные формы: "ошхьада", "аввабин-ламаз" и т.п.
   partOfSpeech?: string;
   partOfSpeechNah?: string; // чеченское название: ц1ердош, хандош, ...
   nounClass?: string; // "ву", "йу", "ду", "бу"
@@ -40,6 +41,7 @@ export interface GrammarInfo {
   verbPresent?: string;
   verbPast?: string;
   verbParticiple?: string;
+  verbFutureParticiple?: string; // причастие будущего времени (4-я форма у Мациева)
 }
 
 /** Полная парадигма склонения — результат DeclensionService */
@@ -64,6 +66,8 @@ export interface CaseSet {
 export interface Meaning {
   translation: string;
   note?: string; // деривационные/ссылочные пометы: "масд. от дала", "см. слово"
+  partOfSpeech?: string; // POS на уровне значения (когда слово многокатегориальное: 1. прил. 2. нареч.)
+  partOfSpeechNah?: string;
   examples?: Phrase[];
 }
 

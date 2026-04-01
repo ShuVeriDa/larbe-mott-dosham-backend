@@ -8,17 +8,22 @@ import {
 
 /**
  * Парсер для геологического словаря Даукаева (daukaev_ru_ce.json).
- * 5379 записей, ~1793 уникальных. Русско-чеченский.
+ * ~2387 записей, ~1793 уникальных. Русско-чеченский.
  *
  * Формат word:
- *   Русский термин, иногда с аннотацией: <i>м-л</i>, <i>г.п.</i>, <i>(река)</i>
+ *   Русский термин, иногда с аннотацией в <i>: м-л, г.п., п.н., (этимология), синонимы
  *
  * Формат translate:
  *   ВСЕГДА начинается с " – ", затем чеченский перевод.
- *   Может содержать класс: <i>(ду/бу/йу/ву)</i> — уже в полной форме!
- *   Может содержать аннотации: <i>м-л (ю)</i>
+ *   Может содержать класс: <i>(ду/бу/йу/ву)</i> или <i>...(ю)</i>
+ *   Может содержать маркеры: м-л, л.м., п.к.
+ *   Может содержать чеченские уточнения: <i>(пардонийн)</i>, <i>(тӀулг тайпа...)</i>
+ *   Может содержать чеченские синонимы: <i>сурьмин къегар, м-л (ду)</i>
  *
- * 3 пустые записи — пропускаем.
+ * Классификация (из word):
+ *   м-л = минерал → geology:mineral
+ *   г.п. = горная порода → geology:rock
+ *   п.н. = палеонтологическое название → geology:paleontology
  */
 export function parseDaukaevEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const unique = dedup(raws);
@@ -30,60 +35,100 @@ export function parseDaukaevEntries(raws: RawDictEntry[]): ParsedEntry[] {
 
     if (!wordRaw || !translate) continue;
 
-    // Очищаем word от аннотаций: <i>м-л</i>, <i>г.п.</i>, <i>(река)</i>
-    const word = stripHtml(cleanText(wordRaw))
+    const wordCleaned = cleanText(wordRaw);
+
+    // --- Извлекаем классификацию из <i> тегов в word ---
+    const classifMatch = wordCleaned.match(
+      /<i>[^<]*(м-л|г\.п\.|п\.н\.)[^<]*<\/i>/,
+    );
+    const classification = classifMatch?.[1];
+
+    // --- Очищаем word: убираем все <i> блоки с содержимым ---
+    let word = wordCleaned
+      .replace(/<i>[^<]*<\/i>/g, "") // убираем <i> блоки целиком
       .replace(/\s+/g, " ")
+      .replace(/[.,\s]+$/, "") // trailing punctuation
       .trim();
 
+    word = stripStressMarks(stripHtml(word));
     if (!word) continue;
 
-    // Убираем начальное " – "
+    // --- Обрабатываем translate ---
     let remaining = translate.replace(/^\s*–\s*/, "").trim();
-
     if (!remaining) continue;
 
-    // Извлекаем класс из translate: <i>(ду)</i>, <i>(бу)</i>, <i>(йу)</i>, <i>(ву)</i>
-    // Также формат: <i>м-л (ю)</i> — класс внутри аннотации
     let nounClass: string | undefined;
+    const markers = new Set<string>();
 
-    // Полная форма класса в скобках: (ду), (бу), (йу), (ву)
-    const fullClassMatch = remaining.match(
-      /<i>[^<]*\((ду|бу|йу|ву)\)[^<]*<\/i>/,
+    // Собираем маркеры из word (м-л, г.п., п.н.)
+    if (classification) markers.add(classification);
+
+    // Обрабатываем каждый <i>...</i> блок в translate
+    remaining = remaining.replace(
+      /<i>([^<]*)<\/i>/g,
+      (_match, content: string) => {
+        let inner = content;
+
+        // Извлекаем класс: (ду), (бу), (йу), (ву)
+        const fullClassMatch = inner.match(/\((ду|бу|йу|ву)\)/);
+        if (fullClassMatch) {
+          nounClass = nounClass || fullClassMatch[1];
+          inner = inner.replace(/\((ду|бу|йу|ву)\)/g, "");
+        }
+
+        // Краткая форма: (ю) → йу
+        const shortMatch = inner.match(/\(ю\)/);
+        if (shortMatch) {
+          nounClass = nounClass || "йу";
+          inner = inner.replace(/\(ю\)/g, "");
+        }
+
+        // Извлекаем маркеры: м-л, л.м., п.к. — сохраняем в note
+        const markerRe = /м-л|л\.м\.|п\.к\./g;
+        let markerMatch: RegExpExecArray | null;
+        while ((markerMatch = markerRe.exec(inner)) !== null) {
+          markers.add(markerMatch[0]);
+        }
+        inner = inner.replace(markerRe, "");
+
+        // Чистим
+        inner = inner
+          .replace(/\s+/g, " ")
+          .replace(/^[\s,]+|[\s,]+$/g, "")
+          .trim();
+
+        // Если ничего не осталось — убираем блок
+        if (!inner) return "";
+
+        // Иначе оставляем содержимое inline (без <i> тегов)
+        return ` ${inner}`;
+      },
     );
-    if (fullClassMatch) {
-      nounClass = fullClassMatch[1];
-      remaining = remaining.replace(fullClassMatch[0], "").trim();
-    }
-
-    // Также проверяем краткую форму (ю) внутри аннотаций
-    if (!nounClass) {
-      const shortClassMatch = remaining.match(
-        /<i>[^<]*\((ю)\)[^<]*<\/i>/,
-      );
-      if (shortClassMatch) {
-        nounClass = "йу"; // ю → йу
-        remaining = remaining.replace(shortClassMatch[0], "").trim();
-      }
-    }
-
-    // Убираем оставшиеся аннотации <i>...</i>
-    remaining = remaining.replace(/<i>[^<]*<\/i>/g, "").trim();
 
     // Финальная очистка перевода
     const translation = stripStressMarks(
       stripHtml(remaining)
+        .replace(/,\s*\(/g, " (") // ", (" → " (" — запятая перед скобкой-уточнением
         .replace(/\s+/g, " ")
-        .replace(/[;,]+$/, "")
+        .replace(/^[\s,–]+|[\s,;.]+$/g, "")
         .trim(),
     );
 
     if (!translation) continue;
 
+    // Домен на основе классификации
+    let domain = "geology";
+    if (classification === "м-л") domain = "geology:mineral";
+    else if (classification === "г.п.") domain = "geology:rock";
+    else if (classification === "п.н.") domain = "geology:paleontology";
+
+    const note = markers.size > 0 ? [...markers].join(", ") : undefined;
+
     results.push({
       word: stripStressMarks(word),
       nounClass,
-      meanings: [{ translation }],
-      domain: "geology",
+      meanings: [{ translation, note }],
+      domain,
     });
   }
 

@@ -1,5 +1,5 @@
-import { parseAbdurashidovEntries } from "./src/merge/parsers/abdurashidov.parser";
 import { readFileSync } from "fs";
+import { parseAbdurashidovEntries } from "./src/merge/parsers/abdurashidov.parser";
 const data = JSON.parse(
   readFileSync("./dictionaries/abdurashidov_ce_ru_ru_ce.json", "utf8"),
 );
