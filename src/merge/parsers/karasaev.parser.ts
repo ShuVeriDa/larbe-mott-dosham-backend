@@ -59,12 +59,20 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   const wordAccented =
     rawAccented && rawAccented !== rawWord ? cleanWord(rawAccented) : undefined;
 
-  let remaining = translate;
+  // Strip broken bracket markup from source (e.g. "b]ая,</b>" → "ая,</b>")
+  let remaining = translate.replace(/^\s*\[?\/?[bi]\]/g, "");
 
   // 1. Extract part of speech: <i>POS</i>
-  const partOfSpeech = extractPartOfSpeech(remaining);
+  let partOfSpeech = extractPartOfSpeech(remaining);
   if (partOfSpeech) {
     // Remove the POS tag from remaining text
+    remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+  }
+
+  // 1b. Extract grammatical markers: <i>м </i>, <i>ж </i>, <i>несов.</i>, <i>сов.</i>
+  const gramMarker = extractGrammarMarker(remaining);
+  if (gramMarker) {
+    if (!partOfSpeech) partOfSpeech = gramMarker.pos;
     remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
   }
 
@@ -106,8 +114,12 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
  */
 function cleanWord(word: string): string {
   return word
+    .replace(/:\s.*$/, "") // remove sub-entry phrases after ": " (originally ":\t")
     .replace(/\d+$/, "") // remove trailing homonym number
     .replace(/<[^>]*>/g, "") // strip any HTML
+    .replace(/\[?\/?[bi]\]?/g, "") // strip broken bracket markup: [b, b], [i, i]
+    .replace(/\s*\[+\s*$/, "") // strip trailing lone bracket(s)
+    .replace(/,\s*$/, "") // strip trailing comma
     .trim();
 }
 
@@ -168,19 +180,39 @@ function extractStyleLabel(text: string): string | undefined {
  * Format: <b>Russian phrase</b> Chechen translation
  * Since this is a RU→NAH dictionary, the bold text is Russian and the
  * text following it is Chechen.
+ *
+ * The Chechen part may contain <i>...</i> tags (e.g. <i>или</i>, <i>нареч.</i>)
+ * and parenthesized groups — these must not break the match.
  */
 function extractRuNahExamples(text: string): Phrase[] {
   const results: Phrase[] = [];
-  const regex = /<b>([^<]+)<\/b>\s*([^<;◊]*)/g;
+  // Allow <i>...</i> tags and parenthesized groups inside the Chechen (nah) portion.
+  // Also handle (<b>ru</b>) nah pattern — optional parens wrapping the <b> tag.
+  const regex = /\(?<b>([^<]+)<\/b>\)?\s*((?:[^<;◊]|<i>[^<]*<\/i>)*)/g;
   let match: RegExpExecArray | null;
 
   while ((match = regex.exec(text)) !== null) {
     const ru = cleanText(stripStressMarks(match[1]));
-    const nah = cleanText(stripStressMarks(match[2]));
-    if (ru && nah) results.push({ nah, ru });
+    let nah = cleanText(stripStressMarks(stripHtml(match[2])));
+    // Strip leading/trailing orphan parens and dashes from nah
+    nah = nah
+      .replace(/^(\(\)\s*|[)\s–-])+/, "")
+      .replace(/\(\s*$/, "")
+      .trim();
+    if (ru && nah && !isGarbage(nah)) results.push({ nah, ru });
   }
 
   return results;
+}
+
+/** Filter out garbage fragments: lone parentheses, dashes, single letters, short artifacts */
+function isGarbage(text: string): boolean {
+  const t = text.trim();
+  if (/^[()–\s-]*$/.test(t)) return true;
+  if (t.length === 1 && /[а-яёА-ЯЁ]/.test(t)) return true;
+  // Fragments like "(или", "(и", "или)", etc.
+  if (/^\(?(?:или|и|тж\.?)\)?\.?$/.test(t)) return true;
+  return false;
 }
 
 /**
@@ -192,20 +224,122 @@ function parseMeanings(text: string): Meaning[] {
   const meaningTexts = splitMeanings(stripped);
 
   return meaningTexts.map((mt) => {
-    const examples = extractRuNahExamples(mt);
+    // Extract per-meaning grammar marker: <i>м </i>, <i>ж </i>, <i>несов.</i> etc.
+    const gram = extractGrammarMarker(mt);
+    let source = mt;
+    if (gram) {
+      source = source.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    }
+
+    // Extract per-meaning style/domain label: <i>перен.</i>, <i>разг.</i> etc.
+    const label = extractMeaningLabel(source);
+    if (label) {
+      source = source.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    }
+
+    // Extract cross-reference: <i>см.</i> <b>word</b> or "см. <b>word</b>"
+    const crossRef = extractCrossRef(source);
+    if (crossRef) {
+      source = source
+        .replace(/<i>\s*см\.[^<]*<\/i>\s*/g, "")
+        .replace(/\bсм\.\s*/g, "")
+        .trim();
+    }
+
+    const examples = extractRuNahExamples(source);
 
     // Translation is the Chechen text, after removing example blocks
-    let translation = mt
-      .replace(/<b>[^<]*<\/b>[^<;◊]*/g, "") // remove example pairs
+    let translation = source
+      .replace(/<b>[^<]*<\/b>(?:[^<;◊]|<i>[^<]*<\/i>)*/g, "") // remove example pairs (including <i> inside)
       .replace(/<[^>]*>/g, "") // strip remaining HTML
+      .replace(/\[?\/?[bi]\]/g, "") // strip broken bracket markup: b], i], [b, etc.
       .replace(/\s+/g, " ")
-      .replace(/[;.]+$/, "")
+      .replace(/(?:;\s*){2,}/g, "; ") // collapse multiple semicolons
+      .replace(/[;:\s]+$/, "") // remove trailing semicolons/colons
+      .replace(/^\s*[;:\s]+/, "") // remove leading semicolons/colons
+      .replace(/\(\s*\)\s*:?\s*/g, "") // remove empty parentheses (with optional trailing colon)
+      .replace(/\s+/g, " ")
       .trim();
     translation = stripStressMarks(translation);
 
+    // Build note from label + cross-ref
+    const noteParts: string[] = [];
+    if (label) noteParts.push(label);
+    if (crossRef) noteParts.push(`см. ${crossRef}`);
+    const note = noteParts.length > 0 ? noteParts.join(" ") : undefined;
+
+    // If translation is empty or just "см." and we have a cross-ref, use note as translation
+    if (!translation && note) {
+      translation = note;
+    }
+
     return {
-      translation: translation || stripHtml(stripStressMarks(mt)),
+      translation:
+        translation ||
+        stripHtml(stripStressMarks(mt))
+          .replace(/\(\s*\)\s*:?\s*/g, "")
+          .replace(/\s+/g, " ")
+          .trim(),
+      ...(note && note !== translation ? { note } : {}),
       examples: examples.length > 0 ? examples : undefined,
     };
   });
+}
+
+/**
+ * Extract grammatical gender/aspect markers from the beginning of translate text.
+ * These appear as <i>м </i>, <i>ж </i>, <i>несов.</i>, <i>сов.</i> etc.
+ * Returns the implied POS (сущ. for gender, гл. for aspect).
+ */
+function extractGrammarMarker(
+  text: string,
+): { marker: string; pos: string } | undefined {
+  // Match <i>м ... </i>, <i>ж ... </i>, <i>несов. ...</i>, <i>сов. ...</i>
+  // The tag may also contain domain labels like "м тех., стр."
+  const m = text.match(/^<i>\s*(м и ж|м|ж|ср\.?|несов\.|сов\.)\s*[^<]*<\/i>/);
+  if (!m) return undefined;
+  const raw = m[1].trim();
+  if (/^(м и ж|м|ж|ср\.?)$/.test(raw)) return { marker: raw, pos: "сущ." };
+  if (raw === "несов.") return { marker: "несов.", pos: "гл." };
+  if (raw === "сов.") return { marker: "сов.", pos: "гл." };
+  return undefined;
+}
+
+/**
+ * Extract cross-reference target(s) from text containing "см." patterns.
+ * Returns the referenced word(s), e.g. "беж" from "<i>см.</i> <b>беж</b>".
+ */
+function extractCrossRef(text: string): string | undefined {
+  // Pattern: <i>см.</i> <b>word</b> or just см. <b>word</b>
+  const refs: string[] = [];
+  const regex = /(?:<i>\s*)?см\.(?:\s*<\/i>)?\s*<b>([^<]+)<\/b>/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    const ref = stripStressMarks(match[1])
+      .replace(/[;,\s]+$/, "")
+      .trim();
+    if (ref) refs.push(ref);
+  }
+  return refs.length > 0 ? refs.join(", ") : undefined;
+}
+
+/**
+ * Extract a style/domain label from the start of a single meaning text.
+ * Handles both <i>перен.</i> and plain-text labels like "перен."
+ */
+function extractMeaningLabel(text: string): string | undefined {
+  // Try <i>label</i> format first
+  const m = text.match(/^<i>([^<]+)<\/i>/);
+  if (m) {
+    const label = m[1].trim().toLowerCase();
+    for (const known of SUBJECT_LABELS) {
+      if (label.startsWith(known)) return known;
+    }
+  }
+  // Try plain-text label at start (e.g. "перен. текст")
+  const lower = text.toLowerCase().trimStart();
+  for (const known of SUBJECT_LABELS) {
+    if (lower.startsWith(known)) return known;
+  }
+  return undefined;
 }
