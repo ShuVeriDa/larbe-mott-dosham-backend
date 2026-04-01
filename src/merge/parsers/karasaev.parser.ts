@@ -57,9 +57,7 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   // Accented variant from raw.word (has stress marks)
   const rawAccented = cleanText(raw.word);
   const wordAccented =
-    rawAccented && rawAccented !== rawWord
-      ? cleanWord(rawAccented)
-      : undefined;
+    rawAccented && rawAccented !== rawWord ? cleanWord(rawAccented) : undefined;
 
   let remaining = translate;
 
@@ -89,9 +87,7 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   const meanings = parseMeanings(mainText);
 
   // 5. Parse phraseology: <b>Russian</b> Chechen
-  const phraseology = phraseText
-    ? extractRuNahExamples(phraseText)
-    : undefined;
+  const phraseology = phraseText ? extractRuNahExamples(phraseText) : undefined;
 
   return {
     word: stripStressMarks(stripHtml(word)),
