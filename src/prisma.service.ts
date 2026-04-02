@@ -29,8 +29,11 @@ export class PrismaService
     });
   }
   async onModuleInit() {
-    // Подключаемся к БД только если еще не подключены
     await this.$connect();
+    // pg_trgm нужен для функции similarity() в поиске
+    await this.$executeRawUnsafe(
+      `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+    );
   }
 
   async onModuleDestroy() {

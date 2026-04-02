@@ -2,18 +2,15 @@ import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { normalizeWord } from "src/common/utils/normalize_util";
+import { DICTIONARIES, type DictionaryMeta } from "src/import/dictionaries";
 import { PrismaService } from "src/prisma.service";
 import {
-  DICTIONARIES,
-  type DictionaryMeta,
-} from "src/import/dictionaries";
-import {
   getParser,
-  type ParsedEntry,
+  type Citation,
   type GrammarInfo,
   type Meaning,
+  type ParsedEntry,
   type Phrase,
-  type Citation,
 } from "./parsers";
 import { deduplicateAndSort } from "./parsers/original.parser";
 
@@ -79,9 +76,15 @@ export class MergeService {
     const outPath = this.resolvedParsedPath(slug);
 
     await fs.mkdir(path.dirname(outPath), { recursive: true });
-    await fs.writeFile(outPath, JSON.stringify(result.entries, null, 2), "utf-8");
+    await fs.writeFile(
+      outPath,
+      JSON.stringify(result.entries, null, 2),
+      "utf-8",
+    );
 
-    this.logger.log(`${slug}: ${result.sourceCount} → ${result.parsedCount} → ${outPath}`);
+    this.logger.log(
+      `${slug}: ${result.sourceCount} → ${result.parsedCount} → ${outPath}`,
+    );
 
     return {
       slug: meta.slug,
@@ -116,7 +119,9 @@ export class MergeService {
 
     await fs.writeFile(absPath, JSON.stringify(cleaned, null, 2), "utf-8");
 
-    this.logger.log(`clean/${slug}: ${rawEntries.length} → ${cleaned.length} (удалено ${rawEntries.length - cleaned.length} дубликатов)`);
+    this.logger.log(
+      `clean/${slug}: ${rawEntries.length} → ${cleaned.length} (удалено ${rawEntries.length - cleaned.length} дубликатов)`,
+    );
 
     return {
       slug: meta.slug,
@@ -217,7 +222,10 @@ export class MergeService {
       throw new BadRequestException(`В ${PARSED_DIR} нет JSON файлов`);
     }
 
-    const merged = new Map<string, { entry: ParsedEntry; sources: Set<string> }>();
+    const merged = new Map<
+      string,
+      { entry: ParsedEntry; sources: Set<string> }
+    >();
     let totalParsed = 0;
 
     for (const file of files) {
@@ -325,10 +333,7 @@ export class MergeService {
     const snapshotFile = `${UNIFIED_DIR}/step_${stepStr}_${slug}.json`;
     const snapshotPath = path.resolve(process.cwd(), snapshotFile);
     await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
-    await fs.copyFile(
-      path.resolve(process.cwd(), UNIFIED_FILE),
-      snapshotPath,
-    );
+    await fs.copyFile(path.resolve(process.cwd(), UNIFIED_FILE), snapshotPath);
 
     // Пишем лог
     const logEntry: MergeLogEntry = {
@@ -394,7 +399,11 @@ export class MergeService {
 
     if (step === 0) {
       // Откат до начала — пустой unified
-      try { await fs.unlink(unifiedPath); } catch { /* нет файла */ }
+      try {
+        await fs.unlink(unifiedPath);
+      } catch {
+        /* нет файла */
+      }
     } else {
       const target = log[step - 1];
       const snapshotPath = path.resolve(process.cwd(), target.snapshotFile);
@@ -430,13 +439,19 @@ export class MergeService {
   async resetSteps() {
     // Удаляем unified.json
     const unifiedPath = path.resolve(process.cwd(), UNIFIED_FILE);
-    try { await fs.unlink(unifiedPath); } catch { /* нет файла */ }
+    try {
+      await fs.unlink(unifiedPath);
+    } catch {
+      /* нет файла */
+    }
 
     // Удаляем папку со снэпшотами
     const unifiedDir = path.resolve(process.cwd(), UNIFIED_DIR);
     try {
       await fs.rm(unifiedDir, { recursive: true });
-    } catch { /* нет папки */ }
+    } catch {
+      /* нет папки */
+    }
 
     return { reset: true, message: "unified.json, снэпшоты и лог удалены" };
   }
@@ -457,9 +472,29 @@ export class MergeService {
 
     const unified: (ParsedEntry & { sources: string[] })[] = JSON.parse(raw);
 
-    await this.prisma.unifiedEntry.deleteMany();
+    if (unified.length === 0) {
+      throw new BadRequestException("unified.json пуст — нечего загружать");
+    }
 
-    const dbEntries = unified.map((e) => ({
+    // Валидация: отсеиваем записи без слова или без значений
+    const skipped: { word: string; reason: string }[] = [];
+    const valid: typeof unified = [];
+    for (const e of unified) {
+      if (!e.word?.trim()) {
+        skipped.push({ word: e.word ?? "(пусто)", reason: "пустое слово" });
+      } else if (!e.meanings?.length) {
+        skipped.push({ word: e.word, reason: "нет значений" });
+      } else {
+        valid.push(e);
+      }
+    }
+
+    if (skipped.length > 0) {
+      this.logger.warn(`Пропущено ${skipped.length} записей при валидации`);
+    }
+
+    // Маппинг в формат БД
+    const dbEntries = valid.map((e) => ({
       word: e.word,
       wordAccented: e.wordAccented ?? null,
       wordNormalized: normalizeWord(e.word),
@@ -469,8 +504,12 @@ export class MergeService {
       nounClassPlural: e.nounClassPlural ?? null,
       grammar: e.grammar ? JSON.parse(JSON.stringify(e.grammar)) : undefined,
       meanings: JSON.parse(JSON.stringify(e.meanings)),
-      phraseology: e.phraseology ? JSON.parse(JSON.stringify(e.phraseology)) : undefined,
-      citations: e.citations ? JSON.parse(JSON.stringify(e.citations)) : undefined,
+      phraseology: e.phraseology
+        ? JSON.parse(JSON.stringify(e.phraseology))
+        : undefined,
+      citations: e.citations
+        ? JSON.parse(JSON.stringify(e.citations))
+        : undefined,
       latinName: e.latinName ?? null,
       styleLabel: e.styleLabel ?? null,
       domain: e.domain ?? null,
@@ -478,15 +517,141 @@ export class MergeService {
       sources: e.sources,
     }));
 
-    let saved = 0;
-    for (let i = 0; i < dbEntries.length; i += CHUNK) {
-      const chunk = dbEntries.slice(i, i + CHUNK);
-      await this.prisma.unifiedEntry.createMany({ data: chunk });
-      saved += chunk.length;
+    const totalChunks = Math.ceil(dbEntries.length / CHUNK);
+    const startTime = Date.now();
+
+    // Включаем pg_trgm (нужно для similarity() в поиске)
+    await this.prisma.$executeRawUnsafe(
+      `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+    );
+
+    // Транзакция: очистка + вставка атомарно
+    await this.prisma.$transaction(
+      async (tx) => {
+        await tx.unifiedEntry.deleteMany();
+        this.logger.log(
+          `Таблица очищена. Загружаю ${dbEntries.length} записей (${totalChunks} чанков по ${CHUNK})...`,
+        );
+
+        for (let i = 0; i < dbEntries.length; i += CHUNK) {
+          const chunk = dbEntries.slice(i, i + CHUNK);
+          await tx.unifiedEntry.createMany({ data: chunk });
+          const chunkNum = Math.floor(i / CHUNK) + 1;
+          if (chunkNum % 10 === 0 || chunkNum === totalChunks) {
+            this.logger.log(
+              `  чанк ${chunkNum}/${totalChunks} (${i + chunk.length} записей)`,
+            );
+          }
+        }
+      },
+      { timeout: 120_000 },
+    );
+
+    // GIN-индекс для быстрого нечёткого поиска по триграммам
+    await this.prisma.$executeRawUnsafe(
+      `CREATE INDEX IF NOT EXISTS "UnifiedEntry_wordNormalized_trgm"
+       ON "UnifiedEntry" USING gin ("wordNormalized" gin_trgm_ops)`,
+    );
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+    this.logger.log(
+      `Загрузка завершена: ${dbEntries.length} записей за ${elapsed}с`,
+    );
+
+    return {
+      loaded: dbEntries.length,
+      skipped: skipped.length,
+      skippedSample: skipped.slice(0, 20),
+      totalInFile: unified.length,
+      elapsedSeconds: Number(elapsed),
+    };
+  }
+
+  // -----------------------------------------------------------------------
+  // Улучшение данных: очистка, нормализация, обогащение unified.json
+  // -----------------------------------------------------------------------
+  async improve() {
+    const filePath = path.resolve(process.cwd(), UNIFIED_FILE);
+    let raw: string;
+    try {
+      raw = await fs.readFile(filePath, "utf-8");
+    } catch {
+      throw new BadRequestException(
+        `Файл ${UNIFIED_FILE} не найден. Сначала выполните слияние.`,
+      );
     }
 
-    this.logger.log(`Загружено в БД: ${saved} записей`);
-    return { loaded: saved };
+    const entries = JSON.parse(raw) as (ParsedEntry & {
+      sources: string[];
+    })[];
+    const report = {
+      total: entries.length,
+      removedEmptyMeanings: 0,
+      removedBrokenExamples: 0,
+      normalizedStyleLabels: 0,
+      cleanedPhraseology: 0,
+      cleanedCitations: 0,
+    };
+
+    for (const entry of entries) {
+      // 1. Удаляем из meanings только те, у которых нет ни translation, ни note
+      if (entry.meanings?.length) {
+        const beforeLen = entry.meanings.length;
+        entry.meanings = entry.meanings.filter(
+          (m) => m.translation?.trim() || m.note?.trim(),
+        );
+        report.removedEmptyMeanings += beforeLen - entry.meanings.length;
+      }
+
+      // 2. Удаляем битые примеры (пустые ru/nah, или nah === ru)
+      for (const m of entry.meanings ?? []) {
+        if (!m.examples) continue;
+        const beforeExLen = m.examples.length;
+        m.examples = m.examples.filter((ex) => {
+          if (!ex.ru?.trim() || !ex.nah?.trim()) return false;
+          if (ex.nah.trim().toLowerCase() === ex.ru.trim().toLowerCase())
+            return false;
+          return true;
+        });
+        report.removedBrokenExamples += beforeExLen - m.examples.length;
+        if (m.examples.length === 0) delete m.examples;
+      }
+
+      // 3. Нормализация styleLabel
+      if (entry.styleLabel) {
+        const normalized = normalizeStyleLabel(entry.styleLabel);
+        if (normalized !== entry.styleLabel) {
+          report.normalizedStyleLabels++;
+          entry.styleLabel = normalized;
+        }
+      }
+
+      // 4. Убираем битые элементы phraseology (пустые nah/ru)
+      if (entry.phraseology) {
+        const beforeLen = entry.phraseology.length;
+        entry.phraseology = entry.phraseology.filter(
+          (p) => p.nah?.trim() && p.ru?.trim(),
+        );
+        report.cleanedPhraseology += beforeLen - entry.phraseology.length;
+        if (entry.phraseology.length === 0) delete entry.phraseology;
+      }
+
+      // 6. Убираем битые элементы citations (пустой text)
+      if (entry.citations) {
+        const beforeLen = entry.citations.length;
+        entry.citations = entry.citations.filter((c) => c.text?.trim());
+        report.cleanedCitations += beforeLen - entry.citations.length;
+        if (entry.citations.length === 0) delete entry.citations;
+      }
+    }
+
+    // Сохраняем
+    await fs.writeFile(filePath, JSON.stringify(entries, null, 2), "utf-8");
+
+    this.logger.log(`improve: обработано ${entries.length} записей`);
+
+    return report;
   }
 
   // -----------------------------------------------------------------------
@@ -496,11 +661,16 @@ export class MergeService {
     const parsedDir = path.resolve(process.cwd(), PARSED_DIR);
     let parsedFiles: { slug: string; entries: number }[] = [];
     try {
-      const files = (await fs.readdir(parsedDir)).filter((f) => f.endsWith(".json"));
+      const files = (await fs.readdir(parsedDir)).filter((f) =>
+        f.endsWith(".json"),
+      );
       for (const f of files) {
         const content = await fs.readFile(path.join(parsedDir, f), "utf-8");
         const arr = JSON.parse(content);
-        parsedFiles.push({ slug: f.replace(/\.json$/, ""), entries: arr.length });
+        parsedFiles.push({
+          slug: f.replace(/\.json$/, ""),
+          entries: arr.length,
+        });
       }
     } catch {
       // папки нет — ок
@@ -508,7 +678,10 @@ export class MergeService {
 
     let unifiedCount = 0;
     try {
-      const raw = await fs.readFile(path.resolve(process.cwd(), UNIFIED_FILE), "utf-8");
+      const raw = await fs.readFile(
+        path.resolve(process.cwd(), UNIFIED_FILE),
+        "utf-8",
+      );
       unifiedCount = JSON.parse(raw).length;
     } catch {
       // файла нет — ок
@@ -517,8 +690,14 @@ export class MergeService {
     const dbCount = await this.prisma.unifiedEntry.count();
 
     return {
-      parsed: { files: parsedFiles, total: parsedFiles.reduce((s, f) => s + f.entries, 0) },
-      unified: { entries: unifiedCount, file: unifiedCount > 0 ? UNIFIED_FILE : null },
+      parsed: {
+        files: parsedFiles,
+        total: parsedFiles.reduce((s, f) => s + f.entries, 0),
+      },
+      unified: {
+        entries: unifiedCount,
+        file: unifiedCount > 0 ? UNIFIED_FILE : null,
+      },
       database: { entries: dbCount },
     };
   }
@@ -568,7 +747,11 @@ export class MergeService {
     const rawEntries = await this.readDictionaryJson(meta.file);
     const parser = getParser(meta.slug);
     const entries = parser(rawEntries);
-    return { entries, sourceCount: rawEntries.length, parsedCount: entries.length };
+    return {
+      entries,
+      sourceCount: rawEntries.length,
+      parsedCount: entries.length,
+    };
   }
 
   /** Загружает unified.json в Map (или пустой Map если файла нет) */
@@ -576,7 +759,10 @@ export class MergeService {
     merged: Map<string, { entry: ParsedEntry; sources: Set<string> }>;
     existingSources: Set<string>;
   }> {
-    const merged = new Map<string, { entry: ParsedEntry; sources: Set<string> }>();
+    const merged = new Map<
+      string,
+      { entry: ParsedEntry; sources: Set<string> }
+    >();
     const existingSources = new Set<string>();
     const outPath = path.resolve(process.cwd(), UNIFIED_FILE);
 
@@ -617,7 +803,7 @@ export class MergeService {
     const absPath = path.resolve(process.cwd(), file);
     const raw = await fs.readFile(absPath, "utf-8");
     const json = JSON.parse(raw);
-    return Array.isArray(json) ? json : json.entries ?? [];
+    return Array.isArray(json) ? json : (json.entries ?? []);
   }
 
   private resolvedParsedPath(slug: string): string {
@@ -686,12 +872,16 @@ function mergeGrammar(target: GrammarInfo, source: GrammarInfo): void {
 }
 
 function mergeMeanings(target: Meaning[], source: Meaning[]): void {
-  const existing = new Set(target.map((m) => m.translation.toLowerCase().trim()));
+  const existing = new Set(
+    target.map((m) => m.translation.toLowerCase().trim()),
+  );
   for (const sm of source) {
     const key = sm.translation.toLowerCase().trim();
     if (!key) continue;
     if (existing.has(key)) {
-      const match = target.find((m) => m.translation.toLowerCase().trim() === key);
+      const match = target.find(
+        (m) => m.translation.toLowerCase().trim() === key,
+      );
       if (match && sm.examples?.length) {
         if (!match.examples) {
           match.examples = [...sm.examples];
@@ -717,7 +907,9 @@ function mergePhrases(target: Phrase[], source: Phrase[]): void {
 }
 
 function mergeCitations(target: Citation[], source: Citation[]): void {
-  const existing = new Set(target.map((c) => c.text.toLowerCase().substring(0, 50)));
+  const existing = new Set(
+    target.map((c) => c.text.toLowerCase().substring(0, 50)),
+  );
   for (const sc of source) {
     const key = sc.text.toLowerCase().substring(0, 50);
     if (!existing.has(key)) {
@@ -725,6 +917,52 @@ function mergeCitations(target: Citation[], source: Citation[]): void {
       existing.add(key);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Нормализация стилевых помет
+// ---------------------------------------------------------------------------
+
+/** Канонические формы стилевых помет (с заглавной, с точкой) */
+const STYLE_LABEL_MAP: Record<string, string> = {
+  прост: "Прост.",
+  разг: "Разг.",
+  уст: "Устар.",
+  устар: "Устар.",
+  ирон: "Ирон.",
+  старинное: "Старин.",
+  старин: "Старин.",
+  стар: "Старин.",
+  архаич: "Устар.",
+  диал: "Диал.",
+  религ: "Религ.",
+  поэт: "Поэт.",
+  груб: "Груб.",
+  презр: "Презр.",
+  презрит: "Презр.",
+  пренебр: "Пренебр.",
+  шутл: "Шутл.",
+  жарг: "Жарг.",
+  неол: "Неол.",
+  калька: "Калька",
+  губ: "Груб.",
+  лит: "Лит.",
+  обл: "Обл.",
+};
+
+function normalizeStyleLabel(label: string): string {
+  // Разбиваем по пробелам, точкам, дефисам: "Прост.-разг." → ["Прост", "разг"]
+  const parts = label.split(/[\s.\-]+/).filter(Boolean);
+
+  const normalized = parts.map((p) => {
+    const lower = p.toLowerCase();
+    return (
+      STYLE_LABEL_MAP[lower] ?? p.charAt(0).toUpperCase() + p.slice(1) + "."
+    );
+  });
+
+  // Убираем дубли после нормализации
+  return [...new Set(normalized)].join(" ");
 }
 
 // ---------------------------------------------------------------------------

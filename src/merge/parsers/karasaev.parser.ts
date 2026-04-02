@@ -51,6 +51,10 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   // Skip broken entries
   if (rawWord === "-[" || rawWord === "3") return null;
 
+  // Извлекаем номер омонима до очистки (верховой1 → homonymIndex=1)
+  const homonymMatch = rawWord.match(/^(.+?)(\d+)(,.*)?$/);
+  const homonymIndex = homonymMatch ? parseInt(homonymMatch[2], 10) : undefined;
+
   const word = cleanWord(rawWord);
   if (!word) return null;
 
@@ -119,6 +123,7 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   return {
     word: stripStressMarks(stripHtml(word)),
     wordAccented: wordAccented ? stripHtml(wordAccented) : undefined,
+    homonymIndex,
     partOfSpeech,
     partOfSpeechNah: posToNah(partOfSpeech),
     meanings,
@@ -134,7 +139,7 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
 function cleanWord(word: string): string {
   return word
     .replace(/:\s.*$/, "") // remove sub-entry phrases after ": " (originally ":\t")
-    .replace(/\d+$/, "") // remove trailing homonym number
+    .replace(/(\D)\d+(,|$)/, "$1$2") // remove homonym number: верховой1, → верховой,
     .replace(/<[^>]*>/g, "") // strip any HTML
     .replace(/\[?\/?[bi]\]?/g, "") // strip broken bracket markup: [b, b], [i, i]
     .replace(/\s*\[+\s*$/, "") // strip trailing lone bracket(s)
