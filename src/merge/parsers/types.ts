@@ -1,6 +1,7 @@
 export interface ParsedEntry {
   word: string;
   wordAccented?: string;
+  homonymIndex?: number; // индекс омонима (вон1, вон2 → 1, 2)
   variants?: string[]; // вариантные формы: "ошхьада", "аввабин-ламаз" и т.п.
   partOfSpeech?: string;
   partOfSpeechNah?: string; // чеченское название: ц1ердош, хандош, ...
@@ -66,6 +67,7 @@ export interface CaseSet {
 export interface Meaning {
   translation: string;
   note?: string; // деривационные/ссылочные пометы: "масд. от дала", "см. слово"
+  label?: string; // структурированные маркеры-пометы: "м-л", "л.м.", "п.к."
   partOfSpeech?: string; // POS на уровне значения (когда слово многокатегориальное: 1. прил. 2. нареч.)
   partOfSpeechNah?: string;
   examples?: Phrase[];

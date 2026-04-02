@@ -43,9 +43,24 @@ export function parseDaukaevEntries(raws: RawDictEntry[]): ParsedEntry[] {
     );
     const classification = classifMatch?.[1];
 
-    // --- Очищаем word: убираем все <i> блоки с содержимым ---
-    let word = wordCleaned
-      .replace(/<i>[^<]*<\/i>/g, "") // убираем <i> блоки целиком
+    // --- Извлекаем описания из <i> блоков в word (кроме классификаторов) ---
+    const wordDescriptions: string[] = [];
+    let word = wordCleaned.replace(
+      /<i>([^<]*)<\/i>/g,
+      (_match, content: string) => {
+        const inner = content.trim();
+        // Если блок содержит только классификатор — пропускаем (уже извлечён выше)
+        if (/^(м-л|г\.п\.|п\.н\.)$/.test(inner)) return "";
+        // Убираем классификатор из смешанного блока, оставляем описание
+        const desc = inner
+          .replace(/,?\s*(м-л|г\.п\.|п\.н\.)\s*/g, "")
+          .replace(/^[\s,()+]+|[\s,()+]+$/g, "") // убираем скобки и пунктуацию по краям
+          .trim();
+        if (desc) wordDescriptions.push(desc);
+        return "";
+      },
+    );
+    word = word
       .replace(/\s+/g, " ")
       .replace(/[.,\s]+$/, "") // trailing punctuation
       .trim();
@@ -122,12 +137,13 @@ export function parseDaukaevEntries(raws: RawDictEntry[]): ParsedEntry[] {
     else if (classification === "г.п.") domain = "geology:rock";
     else if (classification === "п.н.") domain = "geology:paleontology";
 
-    const note = markers.size > 0 ? [...markers].join(", ") : undefined;
+    const label = markers.size > 0 ? [...markers].join(", ") : undefined;
+    const note = wordDescriptions.length > 0 ? wordDescriptions.join("; ") : undefined;
 
     results.push({
       word: stripStressMarks(word),
       nounClass,
-      meanings: [{ translation, note }],
+      meanings: [{ translation, note, label }],
       domain,
     });
   }

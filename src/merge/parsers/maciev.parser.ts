@@ -24,13 +24,42 @@ import {
  * 5. Фразеология:      ◊ <b>нохчийн</b> русский
  */
 export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
-  const translate = raw.translate?.trim();
+  let translate = raw.translate?.trim();
   if (!translate) return null;
 
-  const word = cleanWord(raw.word1 ?? raw.word);
-  if (!word) return null;
+  // Фикс BBCode-артефактов: word="-[" + translate="b]м ..." → word="-м", translate="..."
+  // и word="..., [/" + translate="i]] ..." → word="...", translate="..."
+  let rawWord = raw.word ?? "";
+  let rawWord1 = raw.word1 ?? raw.word ?? "";
 
-  const wordAccented = cleanWord(raw.word);
+  if (rawWord.endsWith("-[") && translate.startsWith("b]")) {
+    // -[b]м → -м  /  -[b]те → -те
+    const restored = translate.match(/^b\](\S+)\s*(.*)/s);
+    if (restored) {
+      rawWord = rawWord.slice(0, -1) + restored[1]; // "-[" → "-" + "м"
+      rawWord1 = rawWord;
+      translate = restored[2];
+    }
+  } else if (rawWord.endsWith(", [/") && translate.startsWith("i]]")) {
+    // "диссимиляцеш, [/" + "i]] диссимиляция" → "диссимиляцеш" + "диссимиляция"
+    rawWord = rawWord.slice(0, -4).trim(); // убираем ", [/"
+    rawWord1 = rawWord;
+    translate = translate.slice(3).trim(); // убираем "i]]"
+  }
+
+  // Пропускаем сломанные записи где word — это часть translate предыдущей записи
+  if (/^\d+\)\s/.test(rawWord) || /<b>/.test(rawWord)) return null;
+
+  const [word, homonymIndex] = cleanWordWithIndex(rawWord1);
+  if (!word || /^\d+$/.test(word)) return null;
+
+  const [wordAccented] = cleanWordWithIndex(rawWord);
+
+  // Очистка translate от артефактов вёрстки
+  translate = translate
+    .replace(/¬\s*/g, "") // мягкий перенос
+    .replace(/^\]+/, "") // в��дущие "]" (остатки BBCode)
+    .replace(/^[,;.\s]+/, ""); // ведущая пунктуация (артефакт разрыва записей)
 
   let remaining = translate;
   let grammar: GrammarInfo | undefined;
@@ -54,12 +83,22 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
     /^<i>((?:прил|прич|сущ|нареч)\.\s+к)\s*<\/i>/,
   );
   let partOfSpeech: string | undefined;
+  let posNote: string | undefined; // расширенное описание POS: "межд., выражающее досаду"
   if (posDerivMatch) {
     // POS + деривация: "прил. к" → POS = "прил.", оставляем <i>прил. к </i> для parseMeanings
     partOfSpeech = normalizePos(posDerivMatch[1].replace(/\s+к$/, ""));
   } else {
     partOfSpeech = extractPartOfSpeech(remaining);
     if (partOfSpeech) {
+      // Извлекаем расширенное описание из POS тега: "<i>межд., выражающее ...;</i>" → "межд., выражающее ..."
+      const posTagMatch = remaining.match(/<i>([^<]+)<\/i>/);
+      if (posTagMatch) {
+        const fullPosText = posTagMatch[1].replace(/[;.\s]+$/, "").trim();
+        // Если текст длиннее чем просто POS-аббревиатура — сохраняем как note
+        if (fullPosText.length > partOfSpeech.length + 2) {
+          posNote = fullPosText;
+        }
+      }
       // Убираем POS тег из remaining
       remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
     }
@@ -79,7 +118,7 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
   }
 
   // 4. Парсим значения
-  const meanings = parseMeanings(mainText);
+  const meanings = parseMeanings(mainText, posNote);
 
   // 5. Парсим фразеологизмы
   const phraseology = phraseText ? extractExamples(phraseText) : undefined;
@@ -88,6 +127,7 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
     word: stripStressMarks(stripHtml(word)),
     wordAccented:
       word !== wordAccented ? tildeToAcute(stripHtml(wordAccented)) : undefined,
+    homonymIndex,
     partOfSpeech: normalizePos(partOfSpeech),
     partOfSpeechNah: posToNah(normalizePos(partOfSpeech)),
     nounClass,
@@ -98,10 +138,24 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
   };
 }
 
-function cleanWord(word: string): string {
-  return cleanText(word)
-    .replace(/\d+$/, "") // убираем числовой суффикс (ага1, бала2)
+/** Очищает word, сохраняя цифру-омоним. Возвращает [word, homonymIndex | undefined] */
+function cleanWordWithIndex(word: string): [string, number | undefined] {
+  let cleaned = cleanText(word)
+    .replace(/l/g, "Ӏ") // латинская l → чеченская палочка Ӏ
+    .replace(/¬\s*/g, "") // мягкий перенос (¬) — артефакт вёрстки
+    .replace(/–/g, "-") // en-dash → обычный дефис
+    .replace(/,(?=\S)/g, ", ") // пробел после запятой
     .trim();
+
+  // Извлекаем цифру-омоним из конца первого слова: "вон2, вониг" → index=2, word="вон, вониг"
+  const indexMatch = cleaned.match(/^([^,]+?)(\d+)(,.*)?$/);
+  let homonymIndex: number | undefined;
+  if (indexMatch) {
+    homonymIndex = parseInt(indexMatch[2], 10);
+    cleaned = indexMatch[1] + (indexMatch[3] ?? "");
+  }
+
+  return [cleaned.trim(), homonymIndex];
 }
 
 /**
@@ -192,12 +246,14 @@ function parseGrammarBlock(block: string): {
   return { grammar, nounClass };
 }
 
-function parseMeanings(text: string): Meaning[] {
+function parseMeanings(text: string, posNote?: string): Meaning[] {
   const stripped = cleanText(text);
 
   // Деривационные/ссылочные пометы (<i>масд. от </i>, <i>прил. к </i>, <i>см.</i> и т.п.)
   // обрабатываем до splitMeanings, чтобы нумерованные подзначения не разбились
-  const derivMatch = stripped.match(/^<i>([^<]*(?:\s+от|\s+к|см\.))\s*<\/i>\s*/);
+  const derivMatch = stripped.match(
+    /^<i>([^<]*(?:\s+от|\s+к|см\.))\s*<\/i>\s*/,
+  );
   if (derivMatch) {
     const derivNote = derivMatch[1].trim();
     const afterNote = stripped.substring(derivMatch[0].length);
@@ -211,7 +267,11 @@ function parseMeanings(text: string): Meaning[] {
     return [{ translation: "", note }];
   }
 
-  return parseNormalMeanings(stripped);
+  const meanings = parseNormalMeanings(stripped);
+  if (posNote) {
+    for (const m of meanings) m.note = m.note || posNote;
+  }
+  return meanings;
 }
 
 /**
@@ -222,6 +282,8 @@ function extractSourceWord(
   derivNote: string,
   text: string,
 ): { note: string; remaining: string } {
+  // Склеиваем <b>X</b>-<b>Y</b> → <b>X-Y</b> (слова через дефис)
+  text = text.replace(/<\/b>-<b>/g, "-");
   const sourceMatch = text.match(/^<b>([^<]+)<\/b>\s*/);
   if (!sourceMatch) return { note: derivNote, remaining: text };
 
@@ -230,7 +292,11 @@ function extractSourceWord(
     .replace(/\d+$/, "")
     .replace(/[\s.,;]+$/, "")
     .trim();
-  const remaining = text.substring(sourceMatch[0].length).trim();
+  let remaining = text.substring(sourceMatch[0].length).trim();
+
+  // Убираем остаточные "2.", "1,2." — номера омонимов после </b>
+  remaining = remaining.replace(/^[\d,.\s]+/, "").trim();
+
   const note = sourceWord ? `${derivNote} ${sourceWord}` : derivNote;
   return { note, remaining };
 }
@@ -278,7 +344,8 @@ function parseNormalMeanings(stripped: string): Meaning[] {
   const meaningTexts = splitMeanings(stripped);
 
   return meaningTexts.map((mt) => {
-    let text = mt;
+    // Склеиваем <b>X</b>-<b>Y</b> → <b>X-Y</b> (слова через дефис, напр. байтамал-яӀ)
+    let text = mt.replace(/<\/b>-<b>/g, "-");
 
     // POS на уровне значения (напр. "1. <i>прил.</i> дикий 2. <i>нареч.</i> дико")
     const meaningPos = extractPartOfSpeech(text);
@@ -287,7 +354,9 @@ function parseNormalMeanings(stripped: string): Meaning[] {
     }
 
     // Деривационная помета внутри нумерованного значения (напр. "1) <i>потенц. от </i>...")
-    const innerDerivMatch = text.match(/^<i>([^<]*(?:\s+от|\s+к|см\.))\s*<\/i>\s*/);
+    const innerDerivMatch = text.match(
+      /^<i>([^<]*(?:\s+от|\s+к|см\.))\s*<\/i>\s*/,
+    );
     if (innerDerivMatch) {
       const derivNote = innerDerivMatch[1].trim();
       const afterNote = text.substring(innerDerivMatch[0].length);
@@ -300,13 +369,15 @@ function parseNormalMeanings(stripped: string): Meaning[] {
             .trim(),
         );
         return {
-          translation, note,
+          translation,
+          note,
           partOfSpeech: meaningPos || undefined,
           partOfSpeechNah: posToNah(meaningPos) || undefined,
         };
       }
       return {
-        translation: "", note,
+        translation: "",
+        note,
         partOfSpeech: meaningPos || undefined,
         partOfSpeechNah: posToNah(meaningPos) || undefined,
       };
@@ -329,8 +400,16 @@ function parseNormalMeanings(stripped: string): Meaning[] {
       .trim();
     translation = stripStressMarks(translation);
 
+    // Убираем остаточную пунктуацию/артефакты: ",", ".", "]"
+    translation = translation
+      .replace(/^[\[\]]+/, "")
+      .replace(/^[,.\s]+/, "")
+      .trim();
+
     return {
-      translation: translation || stripHtml(stripStressMarks(text)),
+      translation:
+        translation ||
+        (allExamples.length > 0 ? "" : stripHtml(stripStressMarks(text))),
       partOfSpeech: meaningPos || undefined,
       partOfSpeechNah: posToNah(meaningPos) || undefined,
       examples: allExamples.length > 0 ? allExamples : undefined,
@@ -368,6 +447,10 @@ function normalizePos(pos: string | undefined): string | undefined {
   for (const [key, val] of Object.entries(map)) {
     if (base.startsWith(key)) return val;
   }
+
+  // Если POS не в маппинге и слишком длинный — это не POS, а определение
+  if (base.length > 15) return undefined;
+
   return pos.trim();
 }
 

@@ -41,7 +41,10 @@ export function stripStressMarks(text: string): string {
 /** Заменяет combining tilde (U+0303) на combining acute accent (U+0301).
  *  Используется для чеченских слов, где тильда в источнике обозначает ударение. */
 export function tildeToAcute(text: string): string {
-  return text.normalize("NFD").replace(/\u0303/g, "\u0301").normalize("NFC");
+  return text
+    .normalize("NFD")
+    .replace(/\u0303/g, "\u0301")
+    .normalize("NFC");
 }
 
 export function cleanText(text: string): string {
@@ -78,12 +81,13 @@ export function dedup(entries: RawDictEntry[]): RawDictEntry[] {
 /** Извлекает пары <b>nah </b>ru из текста.
  *  ru может содержать <i>...</i> теги (домен, пояснения: <i>анат.</i>, <i>кому-л.</i>)
  *  и буквенные подзначения: а) ...; б) ...; в) ... */
-export function extractExamples(
-  text: string,
-): { nah: string; ru: string }[] {
+export function extractExamples(text: string): { nah: string; ru: string }[] {
   const results: { nah: string; ru: string }[] = [];
+  // Склеиваем <b>X</b>-<b>Y</b> → <b>X-Y</b> (слова через дефис)
+  text = text.replace(/<\/b>-<b>/g, "-");
   // Разрешаем ";" когда за ним идёт подзначение (а), б), в), ...)
-  const regex = /<b>([^<]+)<\/b>\s*((?:[^<;◊]|<i>[^<]*<\/i>|;\s*(?=[а-е]\)))*)/g;
+  const regex =
+    /<b>([^<]+)<\/b>\s*((?:[^<;◊]|<i>[^<]*<\/i>|;\s*(?=[а-е]\)))*)/g;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     const nah = cleanText(tildeToAcute(match[1]))
@@ -92,7 +96,8 @@ export function extractExamples(
       .replace(/[\s.,]+$/, "")
       .trim();
     const ru = cleanText(stripStressMarks(stripHtml(match[2])))
-      .replace(/[.,]+$/, "")
+      .replace(/^[!?\s]+/, "") // убираем ведущие ! ? (артефакт: <b>нах</b>! рус)
+      .replace(/[.,!?]+$/, "")
       .trim();
     if (nah) results.push({ nah, ru });
   }
@@ -130,8 +135,9 @@ export function extractDashExamples(
 
 export function extractPartOfSpeech(text: string): string | undefined {
   // Поддерживаем оба формата: <i>прил.</i> и <i>(союз)</i>
+  // Требуем "." после корня POS (кроме "союз", "предлог", "послелог", "частица")
   const m = text.match(
-    /<i>\(?((?:прил|сущ|гл|нареч|числ|мест|союз|предлог|послелог|межд|частица|прич|дееприч|собир|звукоподр)[^<]*?)\)?\s*<\/i>/,
+    /<i>\(?((?:(?:прил|сущ|гл|нареч|числ|мест|межд|прич|дееприч|собир|звукоподр)\.|союз|предлог|послелог|частица)[^<]*?)\)?\s*<\/i>/,
   );
   if (!m) return undefined;
   // Не считаем деривационные пометы ("прич. от", "масд. от" и т.п.) частью речи
@@ -141,21 +147,21 @@ export function extractPartOfSpeech(text: string): string | undefined {
 }
 
 const POS_MAP: Record<string, { ru: string; nah: string }> = {
-  "сущ.":       { ru: "сущ.",       nah: "ц1ердош" },
-  "прил.":      { ru: "прил.",      nah: "билгалдош" },
-  "числ.":      { ru: "числ.",      nah: "терахьдош" },
-  "мест.":      { ru: "мест.",      nah: "ц1ерметдош" },
-  "гл.":        { ru: "гл.",        nah: "хандош" },
-  "нареч.":     { ru: "нареч.",     nah: "куцдош" },
-  "прич.":      { ru: "прич.",      nah: "хандош-билгалдош" },
-  "дееприч.":   { ru: "дееприч.",   nah: "хандош-дештӀаьхье" },
-  "межд.":      { ru: "межд.",      nah: "айдардош" },
-  "междомет.":  { ru: "межд.",      nah: "айдардош" },
-  "союз":       { ru: "союз",       nah: "хуттург" },
-  "предлог":    { ru: "предлог",    nah: "дешхьалхе" },
-  "послелог":   { ru: "послелог",   nah: "дештӀаьхье" },
-  "частица":    { ru: "частица",    nah: "дакъалг" },
-  "собир.":     { ru: "собир.",     nah: "гулдаран терахьдош" },
+  "сущ.": { ru: "сущ.", nah: "цӀердош" },
+  "прил.": { ru: "прил.", nah: "билгалдош" },
+  "числ.": { ru: "числ.", nah: "терахьдош" },
+  "мест.": { ru: "мест.", nah: "цӀерметдош" },
+  "гл.": { ru: "гл.", nah: "хандош" },
+  "нареч.": { ru: "нареч.", nah: "куцдош" },
+  "прич.": { ru: "прич.", nah: "хандош-билгалдош" },
+  "дееприч.": { ru: "дееприч.", nah: "хандош-дештӀаьхье" },
+  "межд.": { ru: "межд.", nah: "айдардош" },
+  "междомет.": { ru: "межд.", nah: "айдардош" },
+  союз: { ru: "союз", nah: "хуттург" },
+  предлог: { ru: "предлог", nah: "дешхьалхе" },
+  послелог: { ru: "послелог", nah: "дештӀаьхье" },
+  частица: { ru: "частица", nah: "дакъалг" },
+  "собир.": { ru: "собир.", nah: "гулдаран терахьдош" },
   "звукоподр.": { ru: "звукоподр.", nah: "гӀовгӀа-терадеш" },
 };
 
@@ -306,6 +312,11 @@ const STYLE_LABELS = [
   "Презр.",
   "Пренебр.",
   "Груб.",
+  "Неол.",
+  "Архаич.",
+  "Стар.",
+  "Калька.",
+  "Калька",
 ];
 
 /**

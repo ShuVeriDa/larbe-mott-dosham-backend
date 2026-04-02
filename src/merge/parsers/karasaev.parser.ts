@@ -59,8 +59,14 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   const wordAccented =
     rawAccented && rawAccented !== rawWord ? cleanWord(rawAccented) : undefined;
 
-  // Strip broken bracket markup from source (e.g. "b]ая,</b>" → "ая,</b>")
-  let remaining = translate.replace(/^\s*\[?\/?[bi]\]/g, "");
+  // Fix BBCode-артефактов: word="..., [" + translate="i]мн.</i>" → reconstruct <i>
+  let remaining = translate;
+  if (/^i\]/.test(remaining)) {
+    remaining = "<i>" + remaining.substring(2);
+  } else {
+    // Strip broken bracket markup from source (e.g. "b]ая,</b>" → "ая,</b>")
+    remaining = remaining.replace(/^\s*\[?\/?[bi]\]/g, "");
+  }
 
   // 1. Extract part of speech: <i>POS</i>
   let partOfSpeech = extractPartOfSpeech(remaining);
@@ -70,16 +76,29 @@ function parseKarasaevEntry(raw: RawDictEntry): ParsedEntry | null {
   }
 
   // 1b. Extract grammatical markers: <i>м </i>, <i>ж </i>, <i>несов.</i>, <i>сов.</i>
+  //      Tag may also contain "см." (e.g. <i>сов., кого, разг. см.</i>) — preserve it.
   const gramMarker = extractGrammarMarker(remaining);
   if (gramMarker) {
     if (!partOfSpeech) partOfSpeech = gramMarker.pos;
-    remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    const gramTagMatch = remaining.match(/^<i>([^<]*)<\/i>\s*/);
+    if (gramTagMatch && /см\./.test(gramTagMatch[1])) {
+      remaining = "<i>см.</i> " + remaining.substring(gramTagMatch[0].length);
+    } else {
+      remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    }
   }
 
   // 2. Extract style/subject labels: <i>рел.</i>, <i>перен.</i>, <i>разг.</i> etc.
+  //    Tag may also contain "см." (e.g. <i>уст. см.</i>) — preserve it.
   const styleLabel = extractStyleLabel(remaining);
   if (styleLabel) {
-    remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    const styleTagMatch = remaining.match(/^<i>([^<]*)<\/i>\s*/);
+    if (styleTagMatch && /см\./.test(styleTagMatch[1])) {
+      // Preserve "см." by replacing the tag with <i>см.</i>
+      remaining = "<i>см.</i> " + remaining.substring(styleTagMatch[0].length);
+    } else {
+      remaining = remaining.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+    }
   }
 
   // 3. Split main text from phraseology (◊)
@@ -228,22 +247,73 @@ function parseMeanings(text: string): Meaning[] {
     const gram = extractGrammarMarker(mt);
     let source = mt;
     if (gram) {
-      source = source.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+      const tagM = source.match(/^<i>([^<]*)<\/i>\s*/);
+      if (tagM && /см\./.test(tagM[1])) {
+        source = "<i>см.</i> " + source.substring(tagM[0].length);
+      } else {
+        source = source.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+      }
     }
 
     // Extract per-meaning style/domain label: <i>перен.</i>, <i>разг.</i> etc.
     const label = extractMeaningLabel(source);
     if (label) {
-      source = source.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+      const tagM = source.match(/^<i>([^<]*)<\/i>\s*/);
+      if (tagM && /см\./.test(tagM[1])) {
+        source = "<i>см.</i> " + source.substring(tagM[0].length);
+      } else {
+        source = source.replace(/<i>[^<]*<\/i>\s*/, "").trim();
+      }
     }
 
     // Extract cross-reference: <i>см.</i> <b>word</b> or "см. <b>word</b>"
     const crossRef = extractCrossRef(source);
     if (crossRef) {
+      // Strip the full "см. <b>word</b> N" pattern (including homonym numbers)
       source = source
-        .replace(/<i>\s*см\.[^<]*<\/i>\s*/g, "")
-        .replace(/\bсм\.\s*/g, "")
+        .replace(/(?:<i>\s*)?см\.(?:\s*<\/i>)?\s*<b>[^<]+<\/b>\s*\d*/g, "")
         .trim();
+    }
+
+    // Derivational references: text ending with <i>...от </i><b>word</b>
+    // Simple: <i>и т. д. буд. от </i><b>зачесть</b>
+    // Multi-tag: <i>и т. д.,</i> берегут <i>наст. от </i><b>беречь</b>
+    // Chained: <i>наст. от </i><b>стлать</b> <i>и от </i><b>стелить</b>
+    // With forms: <i>мн.</i> <b>сейте</b> <i>повел. от </i><b>сеять</b>
+    // Parenthesized: (<i>сравн. ст. от </i><b>большой</b>) доккхаха долу
+    const derivPat =
+      /^(\(?)((?:<i>[^<]*<\/i>\s*|<b>[^<]*<\/b>\s*|[^<])*<i>[^<]*(?:\s+от|\s+к)\s*<\/i>\s*<b>[^<]+<\/b>)\)?\s*/;
+    const derivRefMatch = source.match(derivPat);
+    if (derivRefMatch) {
+      let derivHtml = derivRefMatch[2];
+      const paren = derivRefMatch[1];
+      let afterDeriv = source.substring(derivRefMatch[0].length).trim();
+      // Absorb chained derivations: <i>и от </i><b>word2</b>
+      let chainMatch: RegExpMatchArray | null;
+      while (
+        (chainMatch = afterDeriv.match(
+          /^((?:<i>[^<]*<\/i>\s*|<b>[^<]*<\/b>\s*|[^<])*<i>[^<]*(?:\s+от|\s+к)\s*<\/i>\s*<b>[^<]+<\/b>)\s*/,
+        ))
+      ) {
+        derivHtml += " " + chainMatch[1];
+        afterDeriv = afterDeriv.substring(chainMatch[0].length).trim();
+      }
+      const derivText = `${paren}${stripStressMarks(stripHtml(derivHtml))
+        .replace(/[;,.\s]+$/, "")
+        .trim()}${paren ? ")" : ""}`.trim();
+      if (!afterDeriv || /^[;,.]/.test(afterDeriv)) {
+        // Entire meaning is just the derivation
+        const rest = afterDeriv.replace(/^[;,.]\s*/, "");
+        if (rest) {
+          // There's more text after the derivation — parse it with examples
+          source = rest;
+        } else {
+          return { translation: derivText };
+        }
+      } else {
+        // Derivation + more content — put derivation in note, parse the rest
+        source = afterDeriv;
+      }
     }
 
     const examples = extractRuNahExamples(source);
@@ -296,7 +366,9 @@ function extractGrammarMarker(
 ): { marker: string; pos: string } | undefined {
   // Match <i>м ... </i>, <i>ж ... </i>, <i>несов. ...</i>, <i>сов. ...</i>
   // The tag may also contain domain labels like "м тех., стр."
-  const m = text.match(/^<i>\s*(м и ж|м|ж|ср\.?|несов\.|сов\.)\s*[^<]*<\/i>/);
+  const m = text.match(
+    /^<i>\s*(м и ж|м|ж|ср\.?|несов\.|сов\.)(?=[\s,;<])[^<]*<\/i>/,
+  );
   if (!m) return undefined;
   const raw = m[1].trim();
   if (/^(м и ж|м|ж|ср\.?)$/.test(raw)) return { marker: raw, pos: "сущ." };

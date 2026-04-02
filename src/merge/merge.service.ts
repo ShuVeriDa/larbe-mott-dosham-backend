@@ -56,6 +56,12 @@ export interface MergeLogEntry {
   snapshotFile: string;
 }
 
+/** Ключ для Map: normalizedWord + homonymIndex (если есть) */
+function entryKey(entry: ParsedEntry): string {
+  const base = normalizeWord(entry.word);
+  return entry.homonymIndex ? `${base}#${entry.homonymIndex}` : base;
+}
+
 @Injectable()
 export class MergeService {
   private readonly logger = new Logger(MergeService.name);
@@ -161,7 +167,7 @@ export class MergeService {
     let added = 0;
     let enriched = 0;
     for (const entry of newEntries) {
-      const key = normalizeWord(entry.word);
+      const key = entryKey(entry);
       if (!key) continue;
 
       const existing = merged.get(key);
@@ -221,7 +227,7 @@ export class MergeService {
       totalParsed += entries.length;
 
       for (const entry of entries) {
-        const key = normalizeWord(entry.word);
+        const key = entryKey(entry);
         if (!key) continue;
 
         const existing = merged.get(key);
@@ -296,7 +302,7 @@ export class MergeService {
     let added = 0;
     let enriched = 0;
     for (const entry of newEntries) {
-      const key = normalizeWord(entry.word);
+      const key = entryKey(entry);
       if (!key) continue;
 
       const existing = merged.get(key);
@@ -579,7 +585,7 @@ export class MergeService {
       const entries: (ParsedEntry & { sources: string[] })[] = JSON.parse(raw);
 
       for (const entry of entries) {
-        const key = normalizeWord(entry.word);
+        const key = entryKey(entry);
         if (!key) continue;
         const sources = new Set(entry.sources ?? []);
         sources.forEach((s) => existingSources.add(s));
@@ -593,14 +599,16 @@ export class MergeService {
     return { merged, existingSources };
   }
 
-  /** Сохраняет Map в unified.json */
+  /** Сохраняет Map в unified.json (отсортировано по алфавиту) */
   private async saveUnifiedMap(
     merged: Map<string, { entry: ParsedEntry; sources: Set<string> }>,
   ) {
-    const unified = [...merged.values()].map(({ entry, sources }) => ({
-      ...entry,
-      sources: [...sources],
-    }));
+    const unified = [...merged.entries()]
+      .sort(([keyA], [keyB]) => keyA.localeCompare(keyB, "ru"))
+      .map(([, { entry, sources }]) => ({
+        ...entry,
+        sources: [...sources],
+      }));
     const outPath = path.resolve(process.cwd(), UNIFIED_FILE);
     await fs.writeFile(outPath, JSON.stringify(unified, null, 2), "utf-8");
   }

@@ -236,8 +236,8 @@ function parseWord(raw: string): ParsedWord {
     }
   }
 
-  // Clean trailing junk
-  wordPart = wordPart.replace(/\s*–\s*$/, "").trim();
+  // Clean trailing junk (covers both en-dash "–" and hyphen "-")
+  wordPart = wordPart.replace(/\s*[–\-]\s*$/, "").trim();
   wordPart = wordPart.replace(/\s*,\s*$/, "").trim();
 
   const word = cleanText(stripHtml(wordPart));
@@ -300,6 +300,11 @@ function parseParenContent(
   let nounClass: string | undefined;
   const grammar: GrammarInfo = {};
   const variants: string[] = [];
+
+  // Skip usage examples in parentheses: "напр.: ...", "например: ..."
+  if (/^напр(?:\.|имер)?:/i.test(content)) {
+    return { nounClass: undefined, grammar: undefined, variants: undefined };
+  }
 
   // Strip semicolons — some entries have ";": "Парз (-аш; фарз –фарзаш: ...)"
   // Take only the first segment before ";" for primary plural
@@ -398,7 +403,9 @@ function parseParenContent(
       }
 
       // Otherwise treat as alternate stem for the next part
-      if (/[а-яёА-ЯЁӀ]{2,}/.test(part) && !part.includes(" ")) {
+      // Skip Russian abbreviations/words that aren't real stems
+      if (/[а-яёА-ЯЁӀ]{2,}/.test(part) && !part.includes(" ") &&
+          !/^напр\.?$|^например$|^и\.кх|^д1\.|^кх\.|^т\.п/.test(part)) {
         alternateStem = part;
         continue;
       }
@@ -533,13 +540,25 @@ function extractPluralForm(part: string, headword: string): string | undefined {
     const suffix = suffixMatch[1].trim();
     // Only treat as plural suffix if it looks like one
     if (PLURAL_SUFFIXES_RE.test(suffix) || suffix.length <= 4) {
-      return joinStemSuffix(headword, suffix);
+      const joined = joinStemSuffix(headword, suffix);
+      // If the suffix is long (≥5 chars) and joinStemSuffix found no overlap
+      // (just concatenated), it's a full replacement form with stem change,
+      // not a suffix. E.g. "-жаметтанаш" for "Жамотт", "-бакъ-чӀерий" for "Бакъ-чӀара"
+      if (suffix.length >= 5 && joined === headword + suffix) {
+        return suffix.charAt(0).toUpperCase() + suffix.slice(1);
+      }
+      return joined;
     }
     return undefined;
   }
 
   // Full form: must end with a known plural suffix to be considered a plural
   if (PLURAL_SUFFIXES_RE.test(trimmed) && /[а-яёА-ЯЁӀ]{2,}/.test(trimmed)) {
+    // Short bare suffixes without dash (e.g. "наш", "аш", "ий", "рш")
+    // should be joined with headword, not treated as full forms
+    if (trimmed.length <= 4 && /^[а-яёӀ]+$/.test(trimmed)) {
+      return joinStemSuffix(headword, trimmed);
+    }
     // Must be a single word (no spaces at this point due to check above)
     return trimmed;
   }
@@ -576,10 +595,23 @@ function parseTranslate(raw: string): ParsedTranslate {
     citationPart = undefined;
   }
 
+  // Strip leading dash/en-dash (artifact: "– наконечник стрелы", "- свора собак")
+  definitionPart = definitionPart.replace(/^[–\-]\s*/, "");
+
   // Extract style label from definition part
   const styleLabel = extractStyleLabel(definitionPart);
   if (styleLabel) {
     definitionPart = definitionPart.substring(styleLabel.length).trim();
+  }
+
+  // Strip etymology origin prefix: "Из арабск.", "Из арабск. яз.", "Из арабск, яз.",
+  // "из русского языка:", "из русск. яз." etc.
+  // These are not part of the translation text
+  const etymMatch = definitionPart.match(
+    /^[Ии]з\s+(?:арабск|перс|турецк|тюрк|груз|русск(?:ого)?)\.?\s*,?\s*(?:яз(?:ыка?)?\.?)?\s*:?\s*[–\-]?\s*/,
+  );
+  if (etymMatch) {
+    definitionPart = definitionPart.substring(etymMatch[0].length).trim();
   }
 
   // For entries where definitionPart is empty (translate starts with <br />),
@@ -671,7 +703,16 @@ function parseMeanings(text: string): Meaning[] {
     .trim();
 
   // Clean HTML, but preserve text
-  const cleaned = stripHtml(cleanText(cleanedText));
+  let cleaned = stripHtml(cleanText(cleanedText));
+  if (!cleaned) return [{ translation: "" }];
+
+  // Strip source references from translation text:
+  // "(из кн. А.Сулейманова. «Топонимия Чечни»)" and similar
+  cleaned = cleaned
+    .replace(/\(из кн\.[^)]*\)/g, "")
+    .replace(/Источник:\s*[^.]*\./g, "")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!cleaned) return [{ translation: "" }];
 
   // Split by numbered meanings: "1.text 2.text" or "1) text 2) text"
@@ -679,6 +720,14 @@ function parseMeanings(text: string): Meaning[] {
 
   return parts.map((part) => {
     let translation = part.replace(/[;.]+$/, "").trim();
+
+    // Strip trailing style/origin labels: "Вертолёт.Калька" → "Вертолёт"
+    // Also "Калька из русск. яз", "Калька из русского языка:" etc.
+    translation = translation
+      .replace(/\.?\s*Калька(?:\s+из\s+[а-яё]+\.?\s*(?:яз(?:ыка?)?\.?)?)?:?\s*$/, "")
+      .replace(/\.?\s*(?:Неол|Архаич)\.?\s*$/, "")
+      .replace(/[.\s]+$/, "")
+      .trim();
 
     // Extract per-meaning style label: "Устар. Сторожевой отряд" → styleLabel in note
     const label = extractStyleLabel(translation);
