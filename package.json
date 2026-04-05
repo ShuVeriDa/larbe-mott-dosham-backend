@@ -18,7 +18,14 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "merge-missing": "node scripts/merge-missing.js",
+    "pipeline": "npx ts-node -r tsconfig-paths/register src/cli.ts",
+    "pipeline:parse-all": "npx ts-node -r tsconfig-paths/register src/cli.ts parse all",
+    "pipeline:clean-all": "npx ts-node -r tsconfig-paths/register src/cli.ts clean all",
+    "pipeline:load": "npx ts-node -r tsconfig-paths/register src/cli.ts load",
+    "pipeline:improve": "npx ts-node -r tsconfig-paths/register src/cli.ts improve",
+    "pipeline:reset": "npx ts-node -r tsconfig-paths/register src/cli.ts reset"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

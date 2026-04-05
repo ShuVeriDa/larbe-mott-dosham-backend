@@ -142,140 +142,7 @@ export class MergeService {
   }
 
   // -----------------------------------------------------------------------
-  // Этап 2а: Добавить один словарь в unified.json
-  // Читает существующий unified.json (или создаёт пустой), мержит в него.
-  // -----------------------------------------------------------------------
-  async unifyOne(slug: string) {
-    // Проверяем что parsed файл есть
-    const parsedPath = this.resolvedParsedPath(slug);
-    let raw: string;
-    try {
-      raw = await fs.readFile(parsedPath, "utf-8");
-    } catch {
-      throw new BadRequestException(
-        `Файл ${PARSED_DIR}/${slug}.json не найден. Сначала вызовите POST /api/merge/parse/${slug}`,
-      );
-    }
-    const newEntries: ParsedEntry[] = JSON.parse(raw);
-
-    // Загружаем существующий unified.json (или пустой массив)
-    const { merged, existingSources } = await this.loadUnifiedMap();
-
-    // Проверяем не был ли уже добавлен
-    if (existingSources.has(slug)) {
-      throw new BadRequestException(
-        `Словарь "${slug}" уже в unified.json. Для пересборки используйте POST /api/merge/reset и добавьте заново`,
-      );
-    }
-
-    // Мержим
-    let added = 0;
-    let enriched = 0;
-    for (const entry of newEntries) {
-      const key = entryKey(entry);
-      if (!key) continue;
-
-      const existing = merged.get(key);
-      if (existing) {
-        mergeInto(existing.entry, entry);
-        existing.sources.add(slug);
-        enriched++;
-      } else {
-        merged.set(key, { entry, sources: new Set([slug]) });
-        added++;
-      }
-    }
-
-    // Сохраняем
-    await this.saveUnifiedMap(merged);
-
-    const totalEntries = merged.size;
-    this.logger.log(
-      `unify/${slug}: +${added} новых, ${enriched} обогащено → итого ${totalEntries}`,
-    );
-
-    return {
-      slug,
-      entriesFromDict: newEntries.length,
-      newWords: added,
-      enrichedWords: enriched,
-      totalUnifiedEntries: totalEntries,
-      outputFile: UNIFIED_FILE,
-    };
-  }
-
-  // -----------------------------------------------------------------------
-  // Этап 2б: Объединить все распарсенные JSON сразу → unified.json
-  // -----------------------------------------------------------------------
-  async unifyAll() {
-    const parsedDir = path.resolve(process.cwd(), PARSED_DIR);
-
-    let files: string[];
-    try {
-      files = (await fs.readdir(parsedDir)).filter((f) => f.endsWith(".json"));
-    } catch {
-      throw new BadRequestException(
-        `Папка ${PARSED_DIR} не найдена. Сначала вызовите POST /api/merge/parse-all`,
-      );
-    }
-    if (files.length === 0) {
-      throw new BadRequestException(`В ${PARSED_DIR} нет JSON файлов`);
-    }
-
-    const merged = new Map<
-      string,
-      { entry: ParsedEntry; sources: Set<string> }
-    >();
-    let totalParsed = 0;
-
-    for (const file of files) {
-      const slug = file.replace(/\.json$/, "");
-      const raw = await fs.readFile(path.join(parsedDir, file), "utf-8");
-      const entries: ParsedEntry[] = JSON.parse(raw);
-      totalParsed += entries.length;
-
-      for (const entry of entries) {
-        const key = entryKey(entry);
-        if (!key) continue;
-
-        const existing = merged.get(key);
-        if (existing) {
-          mergeInto(existing.entry, entry);
-          existing.sources.add(slug);
-        } else {
-          merged.set(key, { entry, sources: new Set([slug]) });
-        }
-      }
-      this.logger.log(`  unify-all: ${slug} — ${entries.length} записей`);
-    }
-
-    await this.saveUnifiedMap(merged);
-
-    this.logger.log(`Unified all: ${totalParsed} → ${merged.size} уникальных`);
-
-    return {
-      parsedFiles: files.length,
-      totalParsedEntries: totalParsed,
-      unifiedEntries: merged.size,
-      outputFile: UNIFIED_FILE,
-    };
-  }
-
-  // -----------------------------------------------------------------------
-  // Сброс unified.json (чтобы начать заново)
-  // -----------------------------------------------------------------------
-  async reset() {
-    const outPath = path.resolve(process.cwd(), UNIFIED_FILE);
-    try {
-      await fs.unlink(outPath);
-    } catch {
-      // файла не было — ок
-    }
-    return { reset: true };
-  }
-
-  // -----------------------------------------------------------------------
-  // Этап 2в: Пошаговое слияние с версионированием
+  // Этап 2: Пошаговое слияние с версионированием
   // -----------------------------------------------------------------------
 
   /** Добавить один словарь → сохранить снэпшот + лог */
@@ -290,7 +157,7 @@ export class MergeService {
       raw = await fs.readFile(parsedPath, "utf-8");
     } catch {
       throw new BadRequestException(
-        `Файл ${PARSED_DIR}/${slug}.json не найден. Сначала вызовите POST /api/merge/parse/${slug}`,
+        `Файл ${PARSED_DIR}/${slug}.json не найден. Сначала выполните: npm run pipeline -- parse ${slug}`,
       );
     }
     const newEntries: ParsedEntry[] = JSON.parse(raw);
@@ -302,7 +169,7 @@ export class MergeService {
     // Проверяем не был ли уже добавлен
     if (existingSources.has(slug)) {
       throw new BadRequestException(
-        `Словарь "${slug}" уже добавлен (шаг ${log.find((e) => e.slug === slug)?.step}). Для пересборки используйте DELETE /api/merge/reset-steps`,
+        `Словарь "${slug}" уже добавлен (шаг ${log.find((e) => e.slug === slug)?.step}). Для пересборки выполните: npm run pipeline -- reset`,
       );
     }
 
@@ -466,7 +333,7 @@ export class MergeService {
       raw = await fs.readFile(filePath, "utf-8");
     } catch {
       throw new BadRequestException(
-        `Файл ${UNIFIED_FILE} не найден. Сначала вызовите POST /api/merge/unify`,
+        `Файл ${UNIFIED_FILE} не найден. Сначала выполните слияние: npm run pipeline -- unify-step <slug>`,
       );
     }
 
@@ -578,7 +445,7 @@ export class MergeService {
       raw = await fs.readFile(filePath, "utf-8");
     } catch {
       throw new BadRequestException(
-        `Файл ${UNIFIED_FILE} не найден. Сначала выполните слияние.`,
+        `Файл ${UNIFIED_FILE} не найден. Сначала выполните слияние: npm run pipeline -- unify-step <slug>`,
       );
     }
 
@@ -712,7 +579,7 @@ export class MergeService {
       raw = await fs.readFile(filePath, "utf-8");
     } catch {
       throw new BadRequestException(
-        `Файл ${PARSED_DIR}/${slug}.json не найден. Сначала вызовите POST /api/merge/parse/${slug}`,
+        `Файл ${PARSED_DIR}/${slug}.json не найден. Сначала выполните: npm run pipeline -- parse ${slug}`,
       );
     }
     const entries: ParsedEntry[] = JSON.parse(raw);
