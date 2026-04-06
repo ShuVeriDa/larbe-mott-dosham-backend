@@ -31,6 +31,8 @@ model UnifiedEntry {
   latinName     String? // латинское анатомическое название
   styleLabel    String? // стиль/регистр: Прост., Устар., Старин., Разг.
 
+  variants      String[] // варианты написания/формы того же слова (для поиска)
+
   domain        String? // предметная область: anatomy, computer, math, geology, law, sport
   cefrLevel     String? // оценка уровня CEFR: A1, A2, B1, B2, C1, C2
   sources       String[] // из каких словарей: ["maciev", "baisultanov", ...]

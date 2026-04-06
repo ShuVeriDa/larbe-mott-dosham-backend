@@ -88,7 +88,12 @@ export class DictionaryService {
     const normalized = normalizeWord(word.trim());
 
     return this.prisma.unifiedEntry.findMany({
-      where: { wordNormalized: normalized },
+      where: {
+        OR: [
+          { wordNormalized: normalized },
+          { variants: { has: normalized } },
+        ],
+      },
       orderBy: { id: "asc" },
     });
   }

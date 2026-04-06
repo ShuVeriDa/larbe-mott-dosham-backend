@@ -143,6 +143,7 @@ function cleanWord(word: string): string {
     .replace(/<[^>]*>/g, "") // strip any HTML
     .replace(/\[?\/?[bi]\]?/g, "") // strip broken bracket markup: [b, b], [i, i]
     .replace(/\s*\[+\s*$/, "") // strip trailing lone bracket(s)
+    .replace(/[,\s]+-[а-яёА-ЯЁ.]+.*$/, "") // strip adjective endings: ", -ая, -ое", " -ая, -ое" and anything after
     .replace(/,\s*$/, "") // strip trailing comma
     .trim();
 }

@@ -53,10 +53,15 @@ export interface MergeLogEntry {
   snapshotFile: string;
 }
 
-/** Ключ для Map: normalizedWord + homonymIndex (если есть) */
+/** Ключ для Map: normalizedWord + homonymIndex + nounClass.
+ *  Омонимы с разным классом (напр. "мала" глагол vs "мала" сущ. ву/йу)
+ *  хранятся как отдельные записи. */
 function entryKey(entry: ParsedEntry): string {
   const base = normalizeWord(entry.word);
-  return entry.homonymIndex ? `${base}#${entry.homonymIndex}` : base;
+  const parts = [base];
+  if (entry.homonymIndex) parts.push(`#${entry.homonymIndex}`);
+  if (entry.nounClass) parts.push(`|${entry.nounClass}`);
+  return parts.join("");
 }
 
 @Injectable()
@@ -377,6 +382,7 @@ export class MergeService {
       citations: e.citations
         ? JSON.parse(JSON.stringify(e.citations))
         : undefined,
+      variants: e.variants ?? [],
       latinName: e.latinName ?? null,
       styleLabel: e.styleLabel ?? null,
       domain: e.domain ?? null,

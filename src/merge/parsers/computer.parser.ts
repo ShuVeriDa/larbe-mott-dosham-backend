@@ -37,6 +37,8 @@ export function parseComputerEntries(raws: RawDictEntry[]): ParsedEntry[] {
     if (!translate) continue;
     if (!word1 && !wordRaw) continue;
     if (word1.includes("</b>")) continue; // сломанная запись "упаковать </b>("
+    // Сломанные записи где word1 = "Iалашдан сохранить" (чеченское + русское слипшись)
+    if (/^[IӀ]\S+\s+[а-яёА-ЯЁ]/.test(word1)) continue;
 
     // Извлекаем класс из word
     const classInfo = extractClassFromWord(wordRaw);
@@ -105,7 +107,7 @@ export function parseComputerEntries(raws: RawDictEntry[]): ParsedEntry[] {
       .trim();
 
     results.push({
-      word: wordClean,
+      word: wordClean ? wordClean[0].toLowerCase() + wordClean.slice(1) : wordClean,
       wordAccented: wordAccented !== wordClean ? wordAccented : undefined,
       nounClass,
       nounClassPlural,

@@ -81,8 +81,9 @@ export function parseAnatomyCeRuEntries(raws: RawDictEntry[]): ParsedEntry[] {
     const parsed = parseAnatomyEntry(word, translate);
     if (!parsed) continue;
 
+    const wordClean = stripStressMarks(word);
     results.push({
-      word: stripStressMarks(word),
+      word: wordClean ? wordClean[0].toLowerCase() + wordClean.slice(1) : wordClean,
       ...parsed,
     });
   }
@@ -105,8 +106,9 @@ export function parseAnatomyRuCeEntries(raws: RawDictEntry[]): ParsedEntry[] {
     const parsed = parseAnatomyEntry(word, translate);
     if (!parsed) continue;
 
+    const wordClean = stripStressMarks(word);
     results.push({
-      word: stripStressMarks(word),
+      word: wordClean ? wordClean[0].toLowerCase() + wordClean.slice(1) : wordClean,
       ...parsed,
     });
   }

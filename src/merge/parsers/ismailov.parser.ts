@@ -2,7 +2,6 @@ import type { Meaning, ParsedEntry, Phrase, RawDictEntry } from "./types";
 import {
   cleanText,
   dedup,
-  extractPartOfSpeech,
   normalizePos,
   posToNah,
   splitMeanings,
@@ -12,19 +11,23 @@ import {
 
 /**
  * Парсер для словарей Исмаилова:
- * - ismailov_ce_ru.json (737 записей, ~376 уникальных) — чеченско-русский
- * - ismailov_ru_ce.json (135 записей, ~68 уникальных) — русско-чеченский
+ * - ismailov_ce_ru.json (~15654 записей) — чеченско-русский
+ * - ismailov_ru_ce.json — русско-чеченский
  *
- * CE→RU формат:
- *   word может иметь числовой суффикс: "а1", "а2" — убираем
- *   translate начинается с " – " (53%) или "<i>(бу)</i> – "
- *   Части речи: <i>(союз)</i>, <i>(частица)</i> и т.п.
- *   Примеры: *Къолам <b>а</b>, кехат <b>а</b> – карандаш и бумага (редко, 24 записи)
- *   <br/> разделитель (только 2 записи)
- *   Классы: <i>(бу)</i>, <i>(ду)</i>, <i>(йу)</i>, <i>(ву)</i> — полная форма
- *   Составные классы: <i>(ву-йу-бу)</i>, <i>(бу-ду)</i>
- *   Формы мн. числа: ", – наш <i>(ду)</i> – перевод"
- *   3 сломанные записи (id=8915: полная запись в word)
+ * CE→RU формат (plain text, без HTML):
+ *   word: "Абат (Абаташ) [ду]" — слово (форма мн.ч.) [класс]
+ *         "Авсал [ду]" — слово [класс] (без мн.ч.)
+ *         "АвгIан (авхан)" — слово (вариант) (без класса)
+ *         "Аганан" — простое слово
+ *   translate: plain text
+ *     POS в скобках: "(глаг.) текст", "(прил.) текст", "текст (нареч.)"
+ *     Класс+множ. в начале: "лоьраш (ву-ю-бу) – окулист"
+ *     Примеры через \n: "перевод\n* Нах текст – Рус текст"
+ *   Классы в word: [ду], [ю], [бу], [ву], [бу-ду], [ву-ю-бу] и т.д.
+ *   Составной класс [X-Y-Z]: последний = plural, остальные = singular (через /)
+ *     [ву-ю-бу] → nounClass: "ву/йу", nounClassPlural: "бу"
+ *     [бу-ду]   → nounClass: "бу",    nounClassPlural: "ду"
+ *   ю → йу, б → бу при нормализации
  *
  * RU→CE формат:
  *   translate начинается с " – " в основном
@@ -34,90 +37,65 @@ import {
  *   Нумерованные значения: "1. xxx; 2. yyy"
  */
 
-// Regex для одиночных и составных классов: (бу), (ду), (ву-йу-бу), (бу-ду) и т.д.
-const CLASS_RE = /<i>\(((?:(?:бу|ду|йу|ву)(?:-(?:бу|ду|йу|ву))*))\)<\/i>/;
-
-/**
- * Извлекает и удаляет форму мн. числа из начала translate.
- * Паттерн: ", – СУФФИКС (КЛАСС) – ПЕРЕВОД" или ", ВАРИАНТ – ПЕРЕВОД"
- * Перед вызовом нужно снять <b> теги из начала (они иногда оборачивают plural).
- */
-function extractPluralPrefix(text: string): {
-  remaining: string;
-  plural?: string;
-  pluralClass?: string;
-  variant?: string;
-} {
-  // Снимаем <b>...</b> теги: "<b>, – лоьраш</b> ..." → ", – лоьраш ..."
-  // и ", <b>Лурвоьлларг</b> – ..." → ", Лурвоьлларг – ..."
-  let clean = text.replace(/<b>/g, "").replace(/<\/b>/g, "");
-
-  // Формат: ", – СУФФИКС <i>(CLASS)</i> – ПЕРЕВОД"
-  const m1 = clean.match(
-    /^,\s*–?\s*(.+?)\s*<i>\(((?:(?:бу|ду|йу|ву)(?:-(?:бу|ду|йу|ву))*))\)<\/i>\s*–\s*/,
-  );
-  if (m1) {
-    return {
-      remaining: clean.substring(m1[0].length),
-      plural: stripHtml(m1[1]).trim(),
-      pluralClass: m1[2],
-    };
-  }
-
-  // Формат: ", – СУФФИКС – ПЕРЕВОД" (без класса, суффикс — короткий: -наш, -еш, -ий и т.п.)
-  const m2 = clean.match(/^,\s*–?\s*(-?\S{1,6})\s+–\s*/);
-  if (m2) {
-    return {
-      remaining: clean.substring(m2[0].length),
-      plural: stripHtml(m2[1]).trim(),
-    };
-  }
-
-  // Формат: ", ВАРИАНТ – ПЕРЕВОД" (альтернативная форма, напр. ", Лурвоьлларг – кровник")
-  // Отличие от plural: слово длиннее 6 символов и/или начинается с заглавной
-  const m3 = clean.match(/^,\s*([А-ЯЁӀа-яёӀ]\S+)\s+–\s*/);
-  if (m3) {
-    return {
-      remaining: clean.substring(m3[0].length),
-      variant: stripHtml(m3[1]).trim(),
-    };
-  }
-
-  return { remaining: text };
+/** Нормализует одиночную часть класса: ю→йу, б→бу */
+function normalizeSingleClass(p: string): string {
+  const t = p.trim().toLowerCase();
+  if (t === "ю") return "йу";
+  if (t === "б") return "бу";
+  return t;
 }
 
 /**
- * Извлекает составной класс из текста (ву-йу-бу), (бу-ду) и т.д.
- * и удаляет его из строки.
+ * Разбирает составной класс из формата "X-Y-Z":
+ * - Одиночный [ду] → nounClass: "ду", nounClassPlural: "ду"
+ * - Составной [ву-ю-бу] → nounClass: "ву/йу", nounClassPlural: "бу"
+ *   (последний элемент = plural, остальные = singular через "/")
  */
-function extractCompoundClass(text: string): {
-  remaining: string;
-  nounClass?: string;
+function parseClassBracket(raw: string): {
+  nounClass: string;
+  nounClassPlural: string;
 } {
-  const m = text.match(CLASS_RE);
-  if (m) {
-    return {
-      remaining: text.replace(m[0], "").trim(),
-      nounClass: m[1],
-    };
+  const parts = raw.split("-").map(normalizeSingleClass);
+  if (parts.length === 1) {
+    return { nounClass: parts[0], nounClassPlural: parts[0] };
   }
-  // Также ловим составные классы без <i> тегов в тексте: "(бу-ду)", "(ву-йу-бу)"
-  const m2 = text.match(
-    /\(((?:(?:бу|ду|йу|ву)-)+(?:бу|ду|йу|ву))\)/,
-  );
-  if (m2) {
-    return {
-      remaining: text.replace(m2[0], "").trim(),
-      nounClass: m2[1],
-    };
-  }
-  return { remaining: text };
+  const pluralClass = parts[parts.length - 1];
+  const singulars = parts.slice(0, -1).join("/");
+  return { nounClass: singulars, nounClassPlural: pluralClass };
 }
+
+/**
+ * Regex для POS в plain text: (глаг.), (прил.), (союз), (частица) и т.п.
+ */
+const PLAIN_POS_RE =
+  /\((?:глаг\.[^)]*|прил\.|прилаг\.|прилагат\.|прилагательное|сущ\.|существ\.|нареч\.?|наречие|числ\.|мест\.|местоимение|межд\.|междомет\.|междометие|прич\.|дееприч\.|собир\.|звукоподр\.|звукоподраж\.|союз|предлог|послелог|частица)\)/;
+
+/** Извлекает POS из plain text и возвращает нормализованную форму */
+function extractPlainPos(text: string): string | undefined {
+  const m = text.match(PLAIN_POS_RE);
+  if (!m) return undefined;
+  const raw = m[0].slice(1, -1).trim();
+  const normMap: Record<string, string> = {
+    "прилаг.": "прил.",
+    "прилагат.": "прил.",
+    прилагательное: "прил.",
+    "существ.": "сущ.",
+    наречие: "нареч.",
+    нареч: "нареч.",
+    местоимение: "мест.",
+    "междомет.": "межд.",
+    междометие: "межд.",
+    "звукоподраж.": "звукоподр.",
+    "глаг.": "гл.",
+  };
+  const base = raw.replace(/\s+.*$/, ""); // "глаг. соверш.вида" → "глаг."
+  const normalized = normMap[base] ?? base;
+  return normalizePos(normalized);
+}
+
 
 /** Парсит ismailov_ce_ru.json: word = чеченский, перевод = русский */
-export function parseIsmailovCeRuEntries(
-  raws: RawDictEntry[],
-): ParsedEntry[] {
+export function parseIsmailovCeRuEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const unique = dedup(raws);
   const entryMap = new Map<string, ParsedEntry>();
 
@@ -127,103 +105,137 @@ export function parseIsmailovCeRuEntries(
 
     if (!wordRaw || !translate) continue;
 
-    // Пропускаем сломанные записи (полная запись в word)
-    if (wordRaw.includes(" – ") && wordRaw.length > 50) continue;
+    // --- Парсим word: "Абат (Абаташ) [ду]" ---
+    let wordText = wordRaw;
 
-    // Убираем числовой суффикс: "а1" → "а"
-    let word = stripHtml(cleanText(wordRaw))
-      .replace(/\d+$/, "")
-      .trim();
+    // Извлекаем класс из квадратных скобок: [ду], [бу-ду], [ю]
+    let nounClass: string | undefined;
+    let nounClassPlural: string | undefined;
+    const classMatch = wordText.match(/\[([^\]]+)\]/);
+    if (classMatch) {
+      const parsed = parseClassBracket(classMatch[1]);
+      nounClass = parsed.nounClass;
+      nounClassPlural = parsed.nounClassPlural;
+      wordText = wordText.replace(classMatch[0], "").trim();
+    }
 
+    // Извлекаем все скобки: (Абаташ) = plural, (авхан) = variant
+    // Формат с классом: "Word (Plural) [class]" или "Word (Plural) [class] (variant)"
+    // Формат без класса: "Word (variant)"
+    let plural: string | undefined;
+    let variants: string[] | undefined;
+    const allParens = [...wordText.matchAll(/\(([^)]+)\)/g)];
+    if (allParens.length > 0) {
+      if (nounClass) {
+        // Первые скобки = мн. число, остальные = варианты
+        plural = allParens[0][1].trim();
+        for (let pi = 1; pi < allParens.length; pi++) {
+          variants = variants ?? [];
+          variants.push(allParens[pi][1].trim());
+        }
+      } else {
+        // Без класса — все скобки = варианты
+        variants = allParens.map((m) => m[1].trim());
+      }
+      // Удаляем все скобки из wordText
+      wordText = wordText.replace(/\([^)]+\)/g, "").trim();
+    }
+
+    const wordClean = stripStressMarks(stripHtml(cleanText(wordText)).trim());
+    const word = wordClean ? wordClean[0].toLowerCase() + wordClean.slice(1) : wordClean;
     if (!word) continue;
 
-    let remaining = translate;
+    // --- Парсим translate ---
+    const lines = translate.split("\n");
+    let mainLine = lines[0].trim();
 
-    // Извлекаем класс (одиночный или составной)
-    let nounClass: string | undefined;
-    const classResult = extractCompoundClass(remaining);
-    remaining = classResult.remaining;
-    nounClass = classResult.nounClass;
-
-    // Убираем начальное тире " – "
-    remaining = remaining.replace(/^\s*–\s*/, "").trim();
-
-    // Извлекаем часть речи: <i>(союз)</i> или <i>прил.</i>
-    const partOfSpeech = extractPartOfSpeech(remaining);
-    if (partOfSpeech) {
-      remaining = remaining.replace(/<i>\(?[^<]*?\)?\s*<\/i>\s*/, "").trim();
-    }
-
-    // Разбиваем по <br/> или <br />
-    const parts = remaining.split(/<br\s*\/?>/);
-    remaining = parts.join(" ").trim();
-
-    // Извлекаем формы мн. числа / варианты из начала: ", – наш (ду) – перевод"
-    let plural: string | undefined;
-    let pluralClass: string | undefined;
-    let variants: string[] | undefined;
-    const pluralResult = extractPluralPrefix(remaining);
-    if (pluralResult.plural || pluralResult.variant) {
-      remaining = pluralResult.remaining;
-      if (pluralResult.plural) {
-        plural = pluralResult.plural;
-        pluralClass = pluralResult.pluralClass;
-      }
-      if (pluralResult.variant) {
-        variants = [pluralResult.variant];
-      }
-    }
-
-    // Извлекаем составной класс из оставшегося текста (если не был найден ранее)
+    // Извлекаем plural+class из начала translate: "лоьраш (ву-ю-бу) – окулист"
+    // Формат: "суффикс (класс) – перевод" или "суффикс(класс)– перевод"
     if (!nounClass) {
-      const compResult = extractCompoundClass(remaining);
-      if (compResult.nounClass) {
-        nounClass = compResult.nounClass;
-        remaining = compResult.remaining;
+      const translateClassMatch = mainLine.match(
+        /^(\S+)\s*\(((?:(?:бу|ду|йу|ву|ю|б)(?:-(?:бу|ду|йу|ву|ю|б))*))\)\s*–\s*/,
+      );
+      if (translateClassMatch) {
+        const pluralSuffix = translateClassMatch[1].trim();
+        const clsParsed = parseClassBracket(translateClassMatch[2]);
+        nounClass = clsParsed.nounClass;
+        nounClassPlural = clsParsed.nounClassPlural;
+        // Для многословных: суффикс заменяет последнее слово
+        // "БIаьргийн лор" + "лоьраш" → "БIаьргийн лоьраш"
+        const wordParts = word.split(/\s+/);
+        if (wordParts.length > 1) {
+          plural = [...wordParts.slice(0, -1), pluralSuffix].join(" ");
+        } else {
+          plural = pluralSuffix;
+        }
+        mainLine = mainLine.substring(translateClassMatch[0].length).trim();
       }
     }
 
-    // Извлекаем примеры: *Текст <b>слово</b>, текст – перевод
+    // Извлекаем класс из translate без plural: "(ду) – перевод" (для entries без [class])
+    if (!nounClass) {
+      const simpleClassMatch = mainLine.match(
+        /\(((?:(?:бу|ду|йу|ву|ю|б)(?:-(?:бу|ду|йу|ву|ю|б))*))\)/,
+      );
+      if (simpleClassMatch) {
+        const clsParsed = parseClassBracket(simpleClassMatch[1]);
+        nounClass = clsParsed.nounClass;
+        nounClassPlural = clsParsed.nounClassPlural;
+        mainLine = mainLine.replace(simpleClassMatch[0], "").trim();
+      }
+    }
+
+    // Извлекаем POS из перевода: "(глаг.) долбить" или "бегом (нареч.)"
+    const partOfSpeech = extractPlainPos(mainLine);
+    if (partOfSpeech) {
+      mainLine = mainLine.replace(PLAIN_POS_RE, "").trim();
+    }
+
+    // Убираем двоеточие в конце основной строки (перед примерами)
+    mainLine = mainLine.replace(/:$/, "").trim();
+
+    // Собираем примеры из строк, начинающихся с *
     const examples: Phrase[] = [];
-    const exampleRegex = /\*([^*]+?)(?=\*|$)/g;
-    let exMatch: RegExpExecArray | null;
-    while ((exMatch = exampleRegex.exec(remaining)) !== null) {
-      const exText = exMatch[1].trim();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line.startsWith("*")) continue;
+
+      // Собираем многострочный пример (до следующего * или конца)
+      let exText = line.substring(1).trim();
+      for (let j = i + 1; j < lines.length; j++) {
+        const next = lines[j].trim();
+        if (next.startsWith("*")) break;
+        // Пропускаем длинные статьи/эссе (>3 строк подряд без тире)
+        if (j - i > 3 && !exText.includes(" – ")) break;
+        exText += " " + next;
+        i = j;
+      }
+
       const dashIdx = exText.indexOf(" – ");
       if (dashIdx !== -1) {
-        const nah = stripHtml(exText.substring(0, dashIdx)).trim();
-        const ru = stripHtml(exText.substring(dashIdx + 3)).trim();
+        const nah = stripStressMarks(stripHtml(exText.substring(0, dashIdx)).trim());
+        const ru = stripStressMarks(stripHtml(exText.substring(dashIdx + 3)).trim());
         if (nah && ru) {
-          examples.push({
-            nah: stripStressMarks(nah),
-            ru: stripStressMarks(ru),
-          });
+          examples.push({ nah, ru });
         }
       }
     }
 
-    // Убираем примеры из основного текста
-    let mainText = remaining.replace(/\*[^*]+/g, "").trim();
-
-    // Финальная очистка — stripHtml ПЕРЕД чисткой артефактов
-    let translation = stripStressMarks(
-      stripHtml(mainText)
+    // Финальная очистка перевода
+    const translation = stripStressMarks(
+      stripHtml(mainLine)
         .replace(/\s+/g, " ")
-        .replace(/^[!?]\s*–\s*/, "") // "! – текст" → "текст"
-        .replace(/^[!?]\s+(?=[А-ЯЁа-яёA-Za-z])/, "") // "! текст" → "текст"
-        .replace(/^[,–\s]+/, "") // убираем оставшиеся ", –" в начале
+        .replace(/^[,–\s]+/, "")
         .replace(/[;,]+$/, "")
         .trim(),
     );
 
-    // Если перевод пустой, но есть POS и/или примеры — не пропускаем
     if (!translation && !partOfSpeech && examples.length === 0) continue;
 
-    // Формируем grammar с plural
-    const grammar =
-      plural
-        ? { plural: plural.startsWith("-") ? plural : `-${plural}`, pluralClass }
-        : undefined;
+    // Формируем grammar
+    const grammar = plural
+      ? { plural, pluralClass: nounClassPlural }
+      : undefined;
 
     const normPos = normalizePos(partOfSpeech);
     const meaning: Meaning = {
@@ -233,25 +245,27 @@ export function parseIsmailovCeRuEntries(
       examples: examples.length > 0 ? examples : undefined,
     };
 
-    const cleanWord = stripStressMarks(word);
-
-    // Дедупликация по слову: мержим значения
-    const existing = entryMap.get(cleanWord);
+    // Дедупликация: мержим только если совместимые грам. свойства
+    // "Мала" (глагол, без класса) и "Мала [ву-ю-бу]" (сущ.) = разные записи
+    const dedupeKey = `${word}|${nounClass ?? ""}`;
+    const existing = entryMap.get(dedupeKey);
     if (existing) {
-      // Добавляем значение только если перевод отличается
-      const isDuplicate = translation &&
+      const isDuplicate =
+        translation &&
         existing.meanings.some((m) => m.translation === translation);
       if (!isDuplicate) {
         existing.meanings.push(meaning);
       } else if (examples.length > 0) {
-        // Перевод совпадает, но есть новые примеры — добавляем их
-        const target = existing.meanings.find((m) => m.translation === translation);
+        const target = existing.meanings.find(
+          (m) => m.translation === translation,
+        );
         if (target) {
           target.examples = [...(target.examples ?? []), ...examples];
         }
       }
-      // Обновляем поля если у существующей записи нет
       if (!existing.nounClass && nounClass) existing.nounClass = nounClass;
+      if (!existing.nounClassPlural && nounClassPlural)
+        existing.nounClassPlural = nounClassPlural;
       if (!existing.grammar && grammar) existing.grammar = grammar;
       if (variants) {
         existing.variants = [...(existing.variants ?? []), ...variants];
@@ -260,23 +274,116 @@ export function parseIsmailovCeRuEntries(
     }
 
     const entry: ParsedEntry = {
-      word: cleanWord,
+      word,
       nounClass,
+      nounClassPlural,
       grammar,
       variants,
       meanings: [meaning],
     };
 
-    entryMap.set(cleanWord, entry);
+    entryMap.set(dedupeKey, entry);
   }
 
   return Array.from(entryMap.values());
 }
 
-/** Парсит ismailov_ru_ce.json: word = русский, перевод = чеченский */
-export function parseIsmailovRuCeEntries(
-  raws: RawDictEntry[],
-): ParsedEntry[] {
+/**
+ * Regex для класса в plain text translate: (ду), (ю), (ву-бу), (ву-ю-бу)
+ * Одиночные и составные, без HTML тегов.
+ */
+const RU_CE_CLASS_RE =
+  /\((?:(?:бу|ду|йу|ву|ю|б)(?:-(?:бу|ду|йу|ву|ю|б))*)\)/;
+
+/** POS в word поле: 'а (союз)', 'бдительный (прилаг.)' */
+const WORD_POS_RE =
+  /\((?:союз|частица|предлог|послелог|прилаг\.|прич\.|нареч\.?|межд\.|числ\.|мест\.|глаг\.?|сущ\.)\)/;
+
+/**
+ * Парсит одно значение из translate: "пайда; -наш (бу)" →
+ * { translation: "пайда", nounClass: "бу", plural: "-наш", ... }
+ */
+function parseSingleMeaning(text: string): {
+  translation: string;
+  nounClass?: string;
+  nounClassPlural?: string;
+  pluralSuffix?: string;
+} {
+  let remaining = text.trim();
+  let nounClass: string | undefined;
+  let nounClassPlural: string | undefined;
+  let pluralSuffix: string | undefined;
+
+  // Извлекаем суффикс + класс: "; -аш (ву-бу)" или "- наш (ю)"
+  const suffixClassMatch = remaining.match(
+    /;\s*(-\s*\S+)\s*\(((?:(?:бу|ду|йу|ву|ю|б)(?:-(?:бу|ду|йу|ву|ю|б))*))\)/,
+  );
+  if (suffixClassMatch) {
+    pluralSuffix = suffixClassMatch[1].replace(/\s+/g, "");
+    const cls = parseClassBracket(suffixClassMatch[2]);
+    nounClass = cls.nounClass;
+    nounClassPlural = cls.nounClassPlural;
+    remaining = remaining.replace(suffixClassMatch[0], "").trim();
+  }
+
+  // Извлекаем класс без суффикса: "(ду)", "(ву-бу)"
+  if (!nounClass) {
+    const classMatch = remaining.match(RU_CE_CLASS_RE);
+    if (classMatch) {
+      const cls = parseClassBracket(classMatch[0].slice(1, -1));
+      nounClass = cls.nounClass;
+      nounClassPlural = cls.nounClassPlural;
+      remaining = remaining.replace(classMatch[0], "").trim();
+    }
+  }
+
+  // Извлекаем суффикс без класса: "; -аш"
+  if (!pluralSuffix) {
+    const pluralMatch = remaining.match(/;\s*(-[а-яёӀА-ЯЁ]\S*)/);
+    if (pluralMatch) {
+      pluralSuffix = pluralMatch[1].replace(/\s+/g, "");
+      remaining = remaining.replace(pluralMatch[0], "").trim();
+    }
+  }
+
+  // Очистка
+  const translation = stripStressMarks(
+    stripHtml(remaining)
+      .replace(/\s+/g, " ")
+      .replace(/^[;,.\s]+/, "")
+      .replace(/[;,]+$/, "")
+      .trim(),
+  );
+
+  return { translation, nounClass, nounClassPlural, pluralSuffix };
+}
+
+/**
+ * Строит полную форму множественного числа из чеченского слова и суффикса.
+ * Суффикс формата "-аш", "-ш", "-наш" и т.д.
+ * Для многословных выражений суффикс применяется к последнему слову.
+ */
+function buildPluralForm(word: string, suffix: string): string {
+  const clean = suffix.replace(/;+$/, "").trim();
+  if (!clean.startsWith("-")) return clean;
+  const ending = clean.slice(1);
+  const parts = word.split(/\s+/);
+  parts[parts.length - 1] = parts[parts.length - 1] + ending;
+  return parts.join(" ");
+}
+
+/** Парсит ismailov_ru_ce.json: word = русский, перевод = чеченский
+ *
+ * Формат (plain text, без HTML):
+ *   word: "абрек" или "а (союз)" или "бабушка (мать матери)"
+ *   translate: "обарг; -аш (ву-бу)" — перевод; -суффикс_мн (класс)
+ *              "обаргалла (ду)" — перевод (класс) без суффикса
+ *              "1.пайда; -наш (бу); 2.тӀедогӀург; 3. тӀедаьлларг; -ш (ду)"
+ *                — нумерованные значения, каждое со своим классом
+ *
+ * Каждое значение с отличающимся классом → отдельный ParsedEntry.
+ */
+export function parseIsmailovRuCeEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const unique = dedup(raws);
   const entryMap = new Map<string, ParsedEntry>();
 
@@ -286,128 +393,70 @@ export function parseIsmailovRuCeEntries(
 
     if (!wordRaw || !translate) continue;
 
-    const word = stripHtml(cleanText(wordRaw)).trim();
+    // --- Парсим word ---
+    let wordText = cleanText(wordRaw);
+
+    // Извлекаем POS из word: "а (союз)" → word="а", partOfSpeech="союз"
+    let partOfSpeech: string | undefined;
+    const posMatch = wordText.match(WORD_POS_RE);
+    if (posMatch) {
+      const posRaw = posMatch[0].slice(1, -1).trim();
+      const normMap: Record<string, string> = {
+        "прилаг.": "прил.",
+        "глаг.": "гл.",
+        глаг: "гл.",
+        нареч: "нареч.",
+      };
+      partOfSpeech = normalizePos(normMap[posRaw] ?? posRaw);
+      wordText = wordText.replace(posMatch[0], "").trim();
+    }
+
+    const word = stripStressMarks(stripHtml(wordText).trim());
     if (!word) continue;
 
-    let remaining = translate;
+    const normPos = normalizePos(partOfSpeech);
 
-    // Извлекаем аннотации перед тире: <i>(сказ.)</i>
-    remaining = remaining.replace(/<i>\([^)]*\.<\/i>\)?\s*/g, "").trim();
-    remaining = remaining.replace(/<i>\([^)]*\.\)<\/i>\s*/g, "").trim();
+    // --- Парсим translate: сначала split по значениям, потом класс для каждого ---
+    const meaningTexts = splitMeanings(translate);
 
-    // Убираем начальное тире " – "
-    remaining = remaining.replace(/^\s*–\s*/, "").trim();
+    for (const mt of meaningTexts) {
+      const parsed = parseSingleMeaning(mt);
+      if (!parsed.translation) continue;
 
-    // Извлекаем суффикс мн. числа С классом ПЕРЕД извлечением основного класса
-    // (иначе <i>(класс)</i> после суффикса будет удалён раньше)
-    let pluralSuffix: string | undefined;
-    let nounClassPlural: string | undefined;
-    const pluralWithClassMatch = remaining.match(
-      /;\s*(-\s*\S+)\s*<i>\(((?:(?:бу|ду|йу|ву)(?:-(?:бу|ду|йу|ву))*))\)<\/i>/,
-    );
-    if (pluralWithClassMatch) {
-      pluralSuffix = pluralWithClassMatch[1].replace(/\s+/g, "");
-      nounClassPlural = pluralWithClassMatch[2];
-      remaining = remaining.replace(pluralWithClassMatch[0], "").trim();
-    }
+      const { nounClass, nounClassPlural, pluralSuffix } = parsed;
 
-    // Извлекаем класс (одиночный или составной)
-    let nounClass: string | undefined;
-    const classResult = extractCompoundClass(remaining);
-    remaining = classResult.remaining;
-    nounClass = classResult.nounClass;
-
-    // Извлекаем суффикс мн. числа без класса: "; -аш", "; – наш", "; - ш"
-    // NB: \b не работает с кириллицей в JS, поэтому не используем
-    if (!pluralSuffix) {
-      const pluralNoClassMatch = remaining.match(
-        /;\s*[-–]\s*([а-яёӀ]+)/,
-      );
-      if (pluralNoClassMatch) {
-        pluralSuffix = `-${pluralNoClassMatch[1]}`;
-        remaining = remaining.replace(pluralNoClassMatch[0], "").trim();
-      }
-    }
-
-    // Извлекаем составной класс из текста (без <i> тегов): "сирсай (бу-ду)"
-    if (!nounClass) {
-      const compResult = extractCompoundClass(remaining);
-      if (compResult.nounClass) {
-        nounClass = compResult.nounClass;
-        remaining = compResult.remaining;
-      }
-    }
-
-    // Извлекаем контекстные пометки: "(на теле) – " или "<i>(на теле)</i> – " в начале
-    let note: string | undefined;
-    const noteMatch = remaining.match(/^(?:<i>)?\(([^)]+)\)(?:<\/i>)?\s*–\s*/);
-    if (noteMatch) {
-      note = noteMatch[1].trim();
-      remaining = remaining.substring(noteMatch[0].length).trim();
-    }
-
-    // Финальная очистка HTML
-    remaining = stripHtml(remaining)
-      .replace(/\s+/g, " ")
-      .replace(/[;,]+$/, "")
-      .trim();
-
-    if (!remaining) continue;
-
-    // Разбиваем нумерованные значения: "1. xxx; 2. yyy"
-    const meaningTexts = splitMeanings(remaining);
-    const meanings: Meaning[] = meaningTexts.map((t) => {
-      // Убираем оставшиеся суффиксы мн. числа из отдельных значений
-      const cleaned = stripStressMarks(
-        t.replace(/;\s*[-–]\s*[а-яёӀ]+$/, "")
-          .replace(/[;,]+$/, "")
-          .trim(),
-      );
-      return {
-        translation: cleaned,
-        ...(note ? { note } : {}),
+      const meaning: Meaning = {
+        translation: parsed.translation,
+        partOfSpeech: normPos,
+        partOfSpeechNah: posToNah(normPos),
       };
-    });
 
-    // Убираем пустые значения
-    const validMeanings = meanings.filter((m) => m.translation);
-    if (validMeanings.length === 0) continue;
+      const grammar = pluralSuffix
+        ? { plural: buildPluralForm(parsed.translation, pluralSuffix), pluralClass: nounClassPlural }
+        : undefined;
 
-    // Если основной класс не найден, берём из pluralClass
-    // (в данных класс часто указан только при суффиксе мн. числа)
-    if (!nounClass && nounClassPlural) {
-      nounClass = nounClassPlural;
-    }
-
-    const cleanWord = stripStressMarks(word);
-    const grammar = pluralSuffix
-      ? { plural: pluralSuffix, pluralClass: nounClassPlural }
-      : undefined;
-
-    // Дедупликация по слову
-    const existing = entryMap.get(cleanWord);
-    if (existing) {
-      for (const m of validMeanings) {
-        if (!existing.meanings.some((em) => em.translation === m.translation)) {
-          existing.meanings.push(m);
+      // Дедупликация: ключ = word + nounClass
+      const dedupeKey = `${word}|${nounClass ?? ""}`;
+      const existing = entryMap.get(dedupeKey);
+      if (existing) {
+        if (!existing.meanings.some((em) => em.translation === meaning.translation)) {
+          existing.meanings.push(meaning);
         }
+        if (!existing.nounClass && nounClass) existing.nounClass = nounClass;
+        if (!existing.nounClassPlural && nounClassPlural)
+          existing.nounClassPlural = nounClassPlural;
+        if (!existing.grammar && grammar) existing.grammar = grammar;
+        continue;
       }
-      if (!existing.nounClass && nounClass) existing.nounClass = nounClass;
-      if (!existing.nounClassPlural && nounClassPlural)
-        existing.nounClassPlural = nounClassPlural;
-      if (!existing.grammar && grammar) existing.grammar = grammar;
-      continue;
+
+      entryMap.set(dedupeKey, {
+        word,
+        nounClass,
+        nounClassPlural,
+        grammar,
+        meanings: [meaning],
+      });
     }
-
-    const entry: ParsedEntry = {
-      word: cleanWord,
-      nounClass,
-      nounClassPlural,
-      grammar,
-      meanings: validMeanings,
-    };
-
-    entryMap.set(cleanWord, entry);
   }
 
   return Array.from(entryMap.values());
