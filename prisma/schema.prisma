@@ -11,6 +11,241 @@ datasource db {
   provider = "postgresql"
 }
 
+//////////////////////////////////////////////////////
+// ENUMS
+//////////////////////////////////////////////////////
+
+enum RoleName {
+  USER
+  EDITOR
+  ADMIN
+}
+
+enum PermissionCode {
+  CAN_EDIT_ENTRIES
+  CAN_ADD_ENTRIES
+  CAN_DELETE_ENTRIES
+  CAN_MANAGE_USERS
+  CAN_MANAGE_API_KEYS
+  CAN_RUN_PIPELINE
+}
+
+//////////////////////////////////////////////////////
+// AUTH & USERS
+//////////////////////////////////////////////////////
+
+model User {
+  id                 String   @id @default(uuid())
+  email              String   @unique
+  password           String
+  username           String   @unique
+  name               String
+  hashedRefreshToken String?  @db.Text
+
+  status    String   @default("active") // active | blocked
+
+  roles     UserRoleAssignment[]
+  sessions  UserSession[]
+
+  favorites      UserFavorite[]
+  searchHistory  SearchHistory[]
+  suggestions    Suggestion[]     @relation("SuggestionAuthor")
+  reviewedSuggestions Suggestion[] @relation("SuggestionReviewer")
+  entryEditLogs  EntryEditLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("users")
+}
+
+model UserSession {
+  id        String    @id @default(uuid())
+  userId    String
+
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime  @default(now())
+  revokedAt DateTime?
+
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("user_session")
+}
+
+//////////////////////////////////////////////////////
+// ROLES & PERMISSIONS (RBAC)
+//////////////////////////////////////////////////////
+
+model Role {
+  id          String   @id @default(uuid())
+  name        RoleName @unique
+
+  users       UserRoleAssignment[]
+  permissions RolePermission[]
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("role")
+}
+
+model Permission {
+  id    String         @id @default(uuid())
+  code  PermissionCode @unique
+
+  roles RolePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("permission")
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permission")
+}
+
+model UserRoleAssignment {
+  userId String
+  roleId String
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  assignedAt DateTime @default(now())
+
+  @@id([userId, roleId])
+  @@index([roleId])
+  @@map("user_role_assignment")
+}
+
+//////////////////////////////////////////////////////
+// API KEYS (межсервисный доступ)
+//////////////////////////////////////////////////////
+
+model ApiKey {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  name        String   // "Читалка", "MottLarbe Admin" и т.п.
+  role        RoleName @default(USER) // какие права у этого ключа
+  isActive    Boolean  @default(true)
+
+  createdAt   DateTime @default(now())
+  lastUsedAt  DateTime?
+
+  @@index([key])
+  @@map("api_key")
+}
+
+//////////////////////////////////////////////////////
+// USER FEATURES
+//////////////////////////////////////////////////////
+
+model UserFavorite {
+  id       String @id @default(uuid())
+  userId   String
+  entryId  Int
+
+  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entry    UnifiedEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, entryId])
+  @@index([userId])
+  @@map("user_favorite")
+}
+
+model SearchHistory {
+  id     String @id @default(uuid())
+  userId String
+  query  String
+  lang   String? // "nah" | "ru" | "unknown"
+
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+  @@map("search_history")
+}
+
+//////////////////////////////////////////////////////
+// SUGGESTIONS (предложения правок)
+//////////////////////////////////////////////////////
+
+enum SuggestionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Suggestion {
+  id       String           @id @default(uuid())
+  userId   String
+  entryId  Int
+  field    String           // какое поле: "meanings", "word", "nounClass", ...
+  oldValue String?          @db.Text
+  newValue String           @db.Text
+  comment  String?
+
+  status   SuggestionStatus @default(PENDING)
+  reviewedBy String?
+  reviewedAt DateTime?
+  reviewComment String?
+
+  user     User         @relation("SuggestionAuthor", fields: [userId], references: [id], onDelete: Cascade)
+  reviewer User?        @relation("SuggestionReviewer", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  entry    UnifiedEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([entryId])
+  @@index([status])
+  @@map("suggestion")
+}
+
+//////////////////////////////////////////////////////
+// AUDIT LOG (история изменений записей)
+//////////////////////////////////////////////////////
+
+model EntryEditLog {
+  id       String @id @default(uuid())
+  entryId  Int
+  userId   String?  // null если через API-ключ
+  apiKeyId String?  // null если через JWT
+
+  action   String   // "update" | "bulk_update"
+  changes  Json     // { field: { old: ..., new: ... }, ... }
+
+  user     User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  entry    UnifiedEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([entryId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("entry_edit_log")
+}
+
+//////////////////////////////////////////////////////
+// DICTIONARY
+//////////////////////////////////////////////////////
+
 model UnifiedEntry {
   id            Int     @id @default(autoincrement())
   word          String  // слово без диакритики (основная форма для поиска)
@@ -35,7 +270,12 @@ model UnifiedEntry {
 
   domain        String? // предметная область: anatomy, computer, math, geology, law, sport
   cefrLevel     String? // оценка уровня CEFR: A1, A2, B1, B2, C1, C2
+  entryType     String  @default("standard") // "standard" | "neologism"
   sources       String[] // из каких словарей: ["maciev", "baisultanov", ...]
+
+  favorites     UserFavorite[]
+  suggestions   Suggestion[]
+  editLogs      EntryEditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -43,4 +283,5 @@ model UnifiedEntry {
   @@index([wordNormalized])
   @@index([domain])
   @@index([cefrLevel])
+  @@index([entryType])
 }

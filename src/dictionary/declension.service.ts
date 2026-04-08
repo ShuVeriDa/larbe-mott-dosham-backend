@@ -94,7 +94,7 @@ export class DeclensionService {
   detectType(grammar: GrammarInfo): 1 | 2 | 3 | 4 {
     const instr = grammar.instrumental;
     if (instr) {
-      if (/чунца$/u.test(instr)) return 4;
+      if (/чу[ьъ]?нца$/u.test(instr)) return 4;
       if (/ица$/u.test(instr)) return 3;
       // II тип: основа + н/р + ца  (горанца, тIагарца)
       if (/[нр]ца$/u.test(instr)) return 2;
@@ -227,9 +227,9 @@ export class DeclensionService {
         genitive: "чун",
         dative: "чунна",
         ergative: "чо",
-        instrumental: "чунца",
+        instrumental: "чуьнца",
         substantive: "чух",
-        locative: "чунга",
+        locative: "чуьнга",
         comparative: "чул",
       },
     };
@@ -241,20 +241,41 @@ export class DeclensionService {
 
   /**
    * Мн. число: косвенные падежи от основы мн. числа.
-   * Особенности (Алироев):
-   *   Родительный  → -ийн
-   *   Дательный    → -на
-   *   Эргативный   → -а
-   *   Творительный → -ца
-   *   Вещественный → -ех  (отличается!)
-   *   Местный      → -ка
-   *   Сравнительный → -ел (отличается!)
+   *
+   * Источник: Алироев И.Ю. — примеры из всех 4 типов склонения.
+   *
+   * Окончания мн.ч. (москалш, готанаш, мачаш, белхалой):
+   *   Родительный  → -ийн (москалийн) / -н (белхалойн)
+   *   Дательный    → -на  (москалшна, готанашна)
+   *   Эргативный   → -а   (москалша, готанаша)
+   *   Творительный → -ца  (москалшца, готанашца)
+   *   Вещественный → -ех  (москалех) / -х (белхалойх)
+   *   Местный      → -ка  (москалшка, готанашка)
+   *   Сравнительный → -ел (москалел) / -л (белхалойл)
    */
   private formPluralCase(
     pluralStem: string,
     _type: 1 | 2 | 3 | 4,
     caseName: keyof Omit<CaseSet, "nominative">,
   ): string {
+    // IV тип: мн.ч. на -ой/-й имеет другие окончания (белхалойн, белхалойх, белхалойл)
+    const endsWithOy =
+      pluralStem.endsWith("ой") || pluralStem.endsWith("й");
+
+    if (endsWithOy) {
+      const suffixes: Record<keyof Omit<CaseSet, "nominative">, string> = {
+        genitive: "н",
+        dative: "шна",
+        ergative: "ша",
+        instrumental: "шца",
+        substantive: "х",
+        locative: "шка",
+        comparative: "л",
+      };
+      return pluralStem + suffixes[caseName];
+    }
+
+    // I–III типы: мн.ч. на -ш/-аш
     const suffixes: Record<keyof Omit<CaseSet, "nominative">, string> = {
       genitive: "ийн",
       dative: "на",
@@ -295,7 +316,9 @@ export class DeclensionService {
   private stripEndings(form: string): string[] {
     // Суффиксы от длинных к коротким
     const endings = [
-      // IV тип
+      // IV тип (с ь и без)
+      "чуьнца",
+      "чуьнга",
       "чунца",
       "чунна",
       "чунга",
@@ -304,7 +327,23 @@ export class DeclensionService {
       "чух",
       "чул",
       "чо",
+      // IV тип мн.ч.
+      "ойшна",
+      "ойша",
+      "ойшца",
+      "ойшка",
+      "ойн",
+      "ойх",
+      "ойл",
       // Мн. число
+      "ашна",
+      "аша",
+      "ашца",
+      "ашка",
+      "шна",
+      "шца",
+      "шка",
+      "ша",
       "ийн",
       "ех",
       "ел",

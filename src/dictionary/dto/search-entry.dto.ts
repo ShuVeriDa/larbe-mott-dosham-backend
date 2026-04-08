@@ -10,6 +10,18 @@ export class SearchEntryDto {
   cefr?: string;
 
   @IsOptional()
+  @IsString()
+  pos?: string; // фильтр по части речи: "сущ.", "гл.", "прил." и т.д.
+
+  @IsOptional()
+  @IsString()
+  nounClass?: string; // фильтр по грамм. классу: "ву", "йу", "ду", "бу"
+
+  @IsOptional()
+  @IsIn(["standard", "neologism"])
+  entryType?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)

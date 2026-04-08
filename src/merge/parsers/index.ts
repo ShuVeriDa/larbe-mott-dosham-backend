@@ -9,6 +9,8 @@ import { parseAnatomyCeRuEntries, parseAnatomyRuCeEntries } from "./anatomy.pars
 import { parseComputerEntries } from "./computer.parser";
 import { parseDaukaevEntries } from "./daukaev.parser";
 import { parseIsmailovCeRuEntries, parseIsmailovRuCeEntries } from "./ismailov.parser";
+import { parseCollectedEntries } from "./collected.parser";
+import { parseNeologismEntries } from "./neologisms.parser";
 
 export type BatchParser = (raws: RawDictEntry[]) => ParsedEntry[];
 
@@ -39,6 +41,10 @@ export function getParser(slug: string): BatchParser {
       return parseIsmailovCeRuEntries;
     case "ismailov-ru-nah":
       return parseIsmailovRuCeEntries;
+    case "collected":
+      return parseCollectedEntries;
+    case "neologisms":
+      return parseNeologismEntries;
     default:
       throw new Error(`Неизвестный словарь: ${slug}`);
   }

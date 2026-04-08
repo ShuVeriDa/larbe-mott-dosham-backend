@@ -83,4 +83,16 @@ export const DICTIONARIES: DictionaryMeta[] = [
     direction: "ru-nah",
     file: "dictionaries/ismailov_ru_ce.json",
   },
+  {
+    slug: "collected",
+    title: "Ручной сборник (собранные слова)",
+    direction: "both",
+    file: "dictionaries/collected.json",
+  },
+  {
+    slug: "neologisms",
+    title: "Неологизмы (авторские)",
+    direction: "both",
+    file: "dictionaries/neologisms.json",
+  },
 ];

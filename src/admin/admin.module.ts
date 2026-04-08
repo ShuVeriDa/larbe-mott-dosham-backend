@@ -1,0 +1,24 @@
+import { Module } from "@nestjs/common";
+import { AuthModule } from "src/auth/auth.module";
+import { MergeModule } from "src/merge/merge.module";
+import { AdminService } from "./admin.service";
+import {
+  ApiKeysController,
+  UsersAdminController,
+  PipelineAdminController,
+  QualityAdminController,
+  AuditAdminController,
+} from "./admin.controller";
+
+@Module({
+  imports: [AuthModule, MergeModule],
+  controllers: [
+    ApiKeysController,
+    UsersAdminController,
+    PipelineAdminController,
+    QualityAdminController,
+    AuditAdminController,
+  ],
+  providers: [AdminService],
+})
+export class AdminModule {}

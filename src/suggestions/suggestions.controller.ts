@@ -1,0 +1,71 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+} from "@nestjs/common";
+import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
+import { PermissionCode, SuggestionStatus } from "@prisma/client";
+import { Auth } from "src/auth/decorators/auth.decorator";
+import { AdminPermission } from "src/auth/decorators/admin-permission.decorator";
+import { User } from "src/user/decorators/user.decorator";
+import { SuggestionsService } from "./suggestions.service";
+import { CreateSuggestionDto } from "./dto/create-suggestion.dto";
+import { ReviewSuggestionDto } from "./dto/review-suggestion.dto";
+
+@ApiTags("suggestions")
+@Controller("suggestions")
+export class SuggestionsController {
+  constructor(private readonly suggestionsService: SuggestionsService) {}
+
+  /** Любой авторизованный пользователь может предложить правку */
+  @Post()
+  @Auth()
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Submit a suggestion for an entry" })
+  create(
+    @User("id") userId: string,
+    @Body() dto: CreateSuggestionDto,
+  ) {
+    return this.suggestionsService.create(
+      userId,
+      dto.entryId,
+      dto.field,
+      dto.newValue,
+      dto.comment,
+    );
+  }
+
+  @Get("my")
+  @Auth()
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get my submitted suggestions" })
+  my(@User("id") userId: string) {
+    return this.suggestionsService.getMySubmissions(userId);
+  }
+
+  /** Admin: список всех предложений */
+  @Get()
+  @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "List all suggestions (admin)" })
+  list(@Query("status") status?: string) {
+    const s = status as SuggestionStatus | undefined;
+    return this.suggestionsService.list(s);
+  }
+
+  /** Admin: одобрить или отклонить */
+  @Post(":id/review")
+  @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Review a suggestion (approve/reject)" })
+  review(
+    @Param("id") id: string,
+    @User("id") reviewerId: string,
+    @Body() dto: ReviewSuggestionDto,
+  ) {
+    return this.suggestionsService.review(id, reviewerId, dto.decision, dto.comment);
+  }
+}

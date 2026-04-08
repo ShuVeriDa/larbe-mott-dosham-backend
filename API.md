@@ -38,7 +38,66 @@ npm run build && npm run start:prod
 
 ## API-роуты
 
-Все роуты доступны с префиксом `/api`. Авторизация не требуется — все эндпоинты публичные (только GET).
+Все роуты доступны с префиксом `/api`. Словарные GET-эндпоинты публичные. Редактирование записей требует JWT + разрешение CAN_EDIT_ENTRIES. Auth-эндпоинты для регистрации/входа открыты.
+
+---
+
+### Auth — аутентификация
+
+Базовый путь: `/api/auth`
+
+#### `POST /api/auth/register`
+
+Регистрация нового пользователя. Возвращает access token в теле ответа, refresh token устанавливается в httpOnly cookie.
+
+**Body:**
+
+```json
+{
+  "email": "user@example.com",
+  "password": "MyPass1!",
+  "username": "username",
+  "name": "Имя"
+}
+```
+
+**Ответ:**
+
+```json
+{
+  "user": { "id": "uuid", "email": "...", "username": "...", "name": "..." },
+  "accessToken": "eyJ..."
+}
+```
+
+---
+
+#### `POST /api/auth/login`
+
+Вход по username (или email) + пароль.
+
+**Body:**
+
+```json
+{
+  "username": "username",
+  "password": "MyPass1!"
+}
+```
+
+**Ответ:** аналогичен register.
+
+---
+
+#### `POST /api/auth/login/access-token`
+
+Обновление access token через refresh token из httpOnly cookie. Вызывается фронтендом автоматически при истечении access token.
+
+---
+
+#### `POST /api/auth/logout`
+
+Выход из системы. Требует JWT в заголовке `Authorization: Bearer <token>`. Очищает refresh cookie и обнуляет хеш refresh token в БД.
 
 ---
 
@@ -58,6 +117,9 @@ npm run build && npm run start:prod
 | `limit` | number | 20 | Количество результатов (1–100) |
 | `offset` | number | 0 | Смещение для пагинации |
 | `cefr` | string | — | Фильтр по уровню CEFR: `A1`, `A2`, `B1`, `B2`, `C1`, `C2` |
+| `pos` | string | — | Фильтр по части речи: `сущ.`, `гл.`, `прил.`, `нареч.` и т.д. |
+| `nounClass` | string | — | Фильтр по грамм. классу: `ву`, `йу`, `ду`, `бу` |
+| `entryType` | string | — | Фильтр по типу: `standard`, `neologism` |
 
 **Примеры:**
 
@@ -66,6 +128,8 @@ GET /api/dictionary/search?q=бала
 GET /api/dictionary/search?q=ребёнок&limit=10
 GET /api/dictionary/search?q=бала&cefr=A1
 GET /api/dictionary/search?q=стаг&limit=50&offset=20
+GET /api/dictionary/search?q=бала&pos=сущ.&nounClass=ду
+GET /api/dictionary/search?q=бала&entryType=neologism
 ```
 
 **Логика поиска:**
@@ -186,6 +250,73 @@ GET /api/dictionary/declension/бала
 
 ---
 
+#### `GET /api/dictionary/conjugation/:word`
+
+Спряжение чеченского глагола — 9 временных форм, причастия, деепричастия, повелительное наклонение, отрицание.
+
+**Примеры:**
+
+```
+GET /api/dictionary/conjugation/лаха
+GET /api/dictionary/conjugation/тоха
+GET /api/dictionary/conjugation/хаза
+```
+
+**Логика:**
+1. Ищет глагол в БД, проверяет часть речи
+2. Извлекает 3 базовые формы: настоящее (`verbPresent`), прош. совершенное (`verbPast`)
+3. Определяет тип спряжения (I — окончание -у, II — окончание -а)
+4. Генерирует все производные формы по правилам
+
+**Ответ:**
+
+```json
+{
+  "word": "лаха",
+  "conjugationType": 1,
+  "baseForms": {
+    "present": "лоху",
+    "recentPast": null,
+    "perfect": "лехна"
+  },
+  "tenses": {
+    "presentSimple": "лоху",
+    "presentCompound": "лохуш ву",
+    "recentPast": null,
+    "evidentialPast": null,
+    "perfect": "лехна",
+    "remotePast": "лехнера",
+    "pastImperfective": "лохура",
+    "futurePossible": "лохур",
+    "futureFactual": "лохур ду"
+  },
+  "participles": {
+    "present": "лохург",
+    "past": "лехнарг",
+    "gerundPresent": "лохуш",
+    "gerundPast": "лехна",
+    "masdar": "лахар"
+  },
+  "imperative": {
+    "basic": "лахал",
+    "polite": "лахахьа",
+    "politePlural": "лахийша"
+  },
+  "negation": {
+    "present": "ца лоху",
+    "imperative": "ма лаха"
+  }
+}
+```
+
+Возвращает `null`, если слово не найдено или не является глаголом.
+
+**Два типа спряжения:**
+- **I** — окончание инфинитива -а → -у, корневая гласная меняется (а→о, э→оь, и→уь, о→у, у→у)
+- **II** — окончание -а остаётся -а, корневая гласная может не меняться
+
+---
+
 #### `GET /api/dictionary/lemmatize/:form`
 
 Лемматизация: по любой словоформе пытается найти начальную форму (лемму). Отсекает известные падежные окончания чеченского языка и проверяет кандидатов в БД.
@@ -238,6 +369,208 @@ GET /api/dictionary/stats
     { "level": "B2", "count": 12000 },
     { "level": "C1", "count": 6000 },
     { "level": "C2", "count": 2532 }
+  ]
+}
+```
+
+---
+
+#### `GET /api/dictionary/random`
+
+Случайное слово из словаря. Полезно для "слова дня" на фронтенде.
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `cefr` | string | Опционально: A1–C2, ограничить уровень |
+
+```
+GET /api/dictionary/random
+GET /api/dictionary/random?cefr=A1
+```
+
+---
+
+#### `GET /api/dictionary/phraseology`
+
+Поиск по фразеологизмам (устойчивым выражениям).
+
+| Параметр | Тип | Описание |
+|---|---|---|
+| `q` | string | Поисковый запрос |
+| `limit` | number | Кол-во результатов (по умолчанию 20) |
+| `offset` | number | Смещение |
+
+```
+GET /api/dictionary/phraseology?q=дан
+```
+
+---
+
+### Favorites — избранное (JWT required)
+
+```
+GET  /api/favorites                  — список избранных слов
+POST /api/favorites/:entryId         — toggle (добавить / убрать)
+GET  /api/favorites/:entryId/check   — проверить, в избранном ли
+```
+
+---
+
+### Search History — история поиска (JWT required)
+
+```
+GET    /api/search-history?limit=20  — последние запросы
+DELETE /api/search-history           — очистить историю
+```
+
+---
+
+### Suggestions — предложения правок
+
+```
+POST /api/suggestions                — предложить правку (JWT, любой пользователь)
+GET  /api/suggestions/my             — мои предложения (JWT)
+GET  /api/suggestions?status=PENDING — все предложения (JWT + CAN_EDIT_ENTRIES)
+POST /api/suggestions/:id/review     — одобрить/отклонить (JWT + CAN_EDIT_ENTRIES)
+```
+
+**Body для POST /api/suggestions:**
+
+```json
+{
+  "entryId": 42,
+  "field": "meanings",
+  "newValue": "[{\"translation\": \"исправленный перевод\"}]",
+  "comment": "Перевод неточный"
+}
+```
+
+**Body для POST /api/suggestions/:id/review:**
+
+```json
+{
+  "decision": "approve",
+  "comment": "Принято, спасибо"
+}
+```
+
+---
+
+### Admin — управление (JWT + соответствующие разрешения)
+
+#### API-ключи (`/api/admin/api-keys`, CAN_MANAGE_API_KEYS)
+
+```
+GET    /api/admin/api-keys           — список ключей
+POST   /api/admin/api-keys           — создать { name, role? }
+PATCH  /api/admin/api-keys/:id       — обновить { name?, isActive?, role? }
+DELETE /api/admin/api-keys/:id       — удалить
+```
+
+#### Пользователи (`/api/admin/users`, CAN_MANAGE_USERS)
+
+```
+GET   /api/admin/users               — список пользователей с ролями
+PATCH /api/admin/users/:id/role      — назначить роль { role: "EDITOR" }
+DELETE /api/admin/users/:id/role     — снять роль { role: "EDITOR" }
+PATCH /api/admin/users/:id/block     — заблокировать
+PATCH /api/admin/users/:id/unblock   — разблокировать
+```
+
+#### Pipeline (`/api/admin/pipeline`, CAN_RUN_PIPELINE)
+
+```
+POST /api/admin/pipeline/parse/:slug
+POST /api/admin/pipeline/unify-step/:slug
+POST /api/admin/pipeline/load
+POST /api/admin/pipeline/improve
+POST /api/admin/pipeline/rollback/:step
+POST /api/admin/pipeline/reset
+```
+
+#### Качество данных (`/api/admin/quality`, CAN_EDIT_ENTRIES)
+
+```
+GET /api/admin/quality/stats         — статистика: сколько без примеров, без класса, без POS
+GET /api/admin/quality/problems?type=no-class&limit=50
+```
+
+Типы проблем: `no-meanings`, `no-class`, `no-pos`, `no-examples`.
+
+#### Аудит-лог (`/api/admin/audit`, CAN_EDIT_ENTRIES)
+
+```
+GET /api/admin/audit/entries/:entryId  — история изменений записи
+GET /api/admin/audit/recent?limit=50   — последние правки
+```
+
+---
+
+### Dictionary — редактирование (JWT + CAN_EDIT_ENTRIES)
+
+#### `GET /api/dictionary/:id`
+
+Получить запись по ID. Публичный эндпоинт.
+
+---
+
+#### `PATCH /api/dictionary/:id`
+
+Обновить одну запись. Требует JWT + разрешение `CAN_EDIT_ENTRIES`.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Body (все поля опциональны):**
+
+```json
+{
+  "word": "исправленное слово",
+  "meanings": [
+    {
+      "translation": "перевод",
+      "examples": [{ "nah": "Пример на чеченском.", "ru": "Перевод примера." }]
+    }
+  ],
+  "nounClass": "ду",
+  "styleLabel": "Устар."
+}
+```
+
+При изменении `word` автоматически пересчитывается `wordNormalized`.
+
+**Ответ:** обновлённый объект `UnifiedEntry`.
+
+---
+
+#### `PATCH /api/dictionary/bulk/update`
+
+Обновить несколько записей за один запрос (до 100). Выполняется в транзакции.
+
+**Headers:** `Authorization: Bearer <token>`
+
+**Body:**
+
+```json
+{
+  "entries": [
+    { "id": 42, "data": { "word": "исправленное" } },
+    { "id": 99, "data": { "meanings": [{ "translation": "новый перевод" }] } },
+    { "id": 150, "data": { "cefrLevel": "B2", "domain": "computer" } }
+  ]
+}
+```
+
+**Ответ:**
+
+```json
+{
+  "total": 3,
+  "updated": 3,
+  "failed": 0,
+  "results": [
+    { "id": 42, "success": true },
+    { "id": 99, "success": true },
+    { "id": 150, "success": true }
   ]
 }
 ```
@@ -476,6 +809,8 @@ npm run pipeline -- unify-step umarhadjiev-ahmatukaev
 npm run pipeline -- unify-step nah-ru-anatomy
 npm run pipeline -- unify-step ru-nah-anatomy
 npm run pipeline -- unify-step nah-ru-computer
+npm run pipeline -- unify-step collected
+npm run pipeline -- unify-step neologisms
 ```
 
 **Результат:**
@@ -645,7 +980,9 @@ dictionaries/
 ├── umarhadjiev_ahmatukaev_ce_ru_ru_ce.json
 ├── ce_ru_anatomy.json
 ├── ru_ce_anatomy.json
-└── ru_ce_ce_ru_computer.json
+├── ru_ce_ce_ru_computer.json
+├── collected.json              # ручной сборник (собранные слова)
+└── neologisms.json             # неологизмы (авторские)
 ```
 
 ### Шаг 2. (Опционально) Очистка оригиналов
@@ -684,6 +1021,8 @@ npm run pipeline -- unify-step umarhadjiev-ahmatukaev
 npm run pipeline -- unify-step nah-ru-anatomy
 npm run pipeline -- unify-step ru-nah-anatomy
 npm run pipeline -- unify-step nah-ru-computer
+npm run pipeline -- unify-step collected
+npm run pipeline -- unify-step neologisms
 ```
 
 После каждого шага команда показывает:
@@ -746,3 +1085,5 @@ GET /api/merge/status                  — статус пайплайна
 | `nah-ru-anatomy` | Чеченско-русский анатомический словарь | nah → ru |
 | `ru-nah-anatomy` | Русско-чеченский анатомический словарь | ru → nah |
 | `nah-ru-computer` | Чеченско-русский / русско-чеченский компьютерный словарь | both |
+| `collected` | Ручной сборник (собранные слова) | both |
+| `neologisms` | Неологизмы (авторские) | both |
