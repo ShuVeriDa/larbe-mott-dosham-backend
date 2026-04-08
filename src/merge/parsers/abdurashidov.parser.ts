@@ -39,9 +39,7 @@ interface AbdurashidovRawEntry {
   }[];
 }
 
-export function parseAbdurashidovEntries(
-  raws: RawDictEntry[],
-): ParsedEntry[] {
+export function parseAbdurashidovEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const results: ParsedEntry[] = [];
 
   for (const r of raws) {
@@ -99,10 +97,7 @@ function parseCeRuEntry(raw: AbdurashidovRawEntry): ParsedEntry | null {
   if (raw.translationNote && meanings.length > 0) {
     const existing = meanings[0].translation;
     // Append translationNote in parentheses if it adds info
-    if (
-      existing &&
-      !existing.includes(raw.translationNote)
-    ) {
+    if (existing && !existing.includes(raw.translationNote)) {
       meanings[0].translation = `${existing} (${raw.translationNote})`;
     }
   }
@@ -225,10 +220,7 @@ function parseClassString(raw?: string): string | undefined {
  * declension: "авантюрин, авантюрина, авантюро, авантюре"
  *   → {genitive, dative, ergative, instrumental}
  */
-function parseGrammar(
-  pluralRaw?: string,
-  declensionRaw?: string,
-): GrammarInfo {
+function parseGrammar(pluralRaw?: string, declensionRaw?: string): GrammarInfo {
   const grammar: GrammarInfo = {};
 
   // Parse plural: "авантюраш ю"

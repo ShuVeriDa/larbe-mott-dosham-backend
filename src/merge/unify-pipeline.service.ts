@@ -58,11 +58,7 @@ export class UnifyPipelineService {
     const meta = DICTIONARIES.find((d) => d.slug === slug);
     if (!meta) throw new BadRequestException(`Словарь "${slug}" не найден`);
 
-    const parsedPath = path.resolve(
-      process.cwd(),
-      PARSED_DIR,
-      `${slug}.json`,
-    );
+    const parsedPath = path.resolve(process.cwd(), PARSED_DIR, `${slug}.json`);
     let raw: string;
     try {
       raw = await fs.readFile(parsedPath, "utf-8");
@@ -111,10 +107,7 @@ export class UnifyPipelineService {
     const snapshotFile = `${UNIFIED_DIR}/step_${stepStr}_${slug}.json`;
     const snapshotPath = path.resolve(process.cwd(), snapshotFile);
     await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
-    await fs.copyFile(
-      path.resolve(process.cwd(), UNIFIED_FILE),
-      snapshotPath,
-    );
+    await fs.copyFile(path.resolve(process.cwd(), UNIFIED_FILE), snapshotPath);
 
     const logEntry: MergeLogEntry = {
       step,

@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Get,
   Param,
   ParseIntPipe,
@@ -19,10 +20,7 @@ import { DictionaryService } from "./dictionary.service";
 import { DeclensionService } from "./declension.service";
 import { ConjugationService } from "./conjugation.service";
 import { SearchEntryDto } from "./dto/search-entry.dto";
-import {
-  UpdateEntryDto,
-  BulkUpdateEntriesDto,
-} from "./dto/update-entry.dto";
+import { UpdateEntryDto, BulkUpdateEntriesDto } from "./dto/update-entry.dto";
 
 @ApiTags("dictionary")
 @Controller("dictionary")
@@ -62,7 +60,9 @@ export class DictionaryController {
   }
 
   @Get("conjugation/:word")
-  @ApiOperation({ summary: "Get verb conjugation paradigm (9 tenses, moods, participles)" })
+  @ApiOperation({
+    summary: "Get verb conjugation paradigm (9 tenses, moods, participles)",
+  })
   conjugation(@Param("word") word: string) {
     return this.conjugationService.getParadigm(word);
   }
@@ -83,14 +83,10 @@ export class DictionaryController {
   @ApiOperation({ summary: "Search by phraseology (idioms, expressions)" })
   phraseology(
     @Query("q") q: string,
-    @Query("limit") limit?: number,
-    @Query("offset") offset?: number,
+    @Query("limit", new DefaultValuePipe(20), ParseIntPipe) limit?: number,
+    @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset?: number,
   ) {
-    return this.dictionaryService.phraseologySearch(
-      q,
-      limit ? Number(limit) : 20,
-      offset ? Number(offset) : 0,
-    );
+    return this.dictionaryService.phraseologySearch(q, limit, offset);
   }
 
   // -----------------------------------------------------------------------
@@ -119,10 +115,7 @@ export class DictionaryController {
   @ApiBearerAuth()
   @ApiOperation({ summary: "Update a single dictionary entry" })
   @ApiOkResponse({ description: "Entry updated" })
-  update(
-    @Param("id", ParseIntPipe) id: number,
-    @Body() dto: UpdateEntryDto,
-  ) {
+  update(@Param("id", ParseIntPipe) id: number, @Body() dto: UpdateEntryDto) {
     return this.dictionaryService.updateEntry(id, dto);
   }
 }

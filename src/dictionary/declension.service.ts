@@ -126,22 +126,16 @@ export class DeclensionService {
     if (number === "singular") {
       return {
         nominative,
-        genitive:
-          grammar.genitive ?? this.formCase(stem, declType, "genitive"),
+        genitive: grammar.genitive ?? this.formCase(stem, declType, "genitive"),
         dative: grammar.dative ?? this.formCase(stem, declType, "dative"),
-        ergative:
-          grammar.ergative ?? this.formCase(stem, declType, "ergative"),
+        ergative: grammar.ergative ?? this.formCase(stem, declType, "ergative"),
         instrumental:
-          grammar.instrumental ??
-          this.formCase(stem, declType, "instrumental"),
+          grammar.instrumental ?? this.formCase(stem, declType, "instrumental"),
         substantive:
-          grammar.substantive ??
-          this.formCase(stem, declType, "substantive"),
-        locative:
-          grammar.locative ?? this.formCase(stem, declType, "locative"),
+          grammar.substantive ?? this.formCase(stem, declType, "substantive"),
+        locative: grammar.locative ?? this.formCase(stem, declType, "locative"),
         comparative:
-          grammar.comparative ??
-          this.formCase(stem, declType, "comparative"),
+          grammar.comparative ?? this.formCase(stem, declType, "comparative"),
       };
     }
 
@@ -152,8 +146,7 @@ export class DeclensionService {
         grammar.pluralGenitive ??
         this.formPluralCase(stem, declType, "genitive"),
       dative:
-        grammar.pluralDative ??
-        this.formPluralCase(stem, declType, "dative"),
+        grammar.pluralDative ?? this.formPluralCase(stem, declType, "dative"),
       ergative:
         grammar.pluralErgative ??
         this.formPluralCase(stem, declType, "ergative"),
@@ -259,8 +252,7 @@ export class DeclensionService {
     caseName: keyof Omit<CaseSet, "nominative">,
   ): string {
     // IV тип: мн.ч. на -ой/-й имеет другие окончания (белхалойн, белхалойх, белхалойл)
-    const endsWithOy =
-      pluralStem.endsWith("ой") || pluralStem.endsWith("й");
+    const endsWithOy = pluralStem.endsWith("ой") || pluralStem.endsWith("й");
 
     if (endsWithOy) {
       const suffixes: Record<keyof Omit<CaseSet, "nominative">, string> = {

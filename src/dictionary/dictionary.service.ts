@@ -9,10 +9,7 @@ import { PrismaService } from "src/prisma.service";
 import { RedisService } from "src/redis/redis.service";
 import { DeclensionService } from "./declension.service";
 import { SearchEntryDto } from "./dto/search-entry.dto";
-import {
-  UpdateEntryDto,
-  BulkUpdateItemDto,
-} from "./dto/update-entry.dto";
+import { UpdateEntryDto, BulkUpdateItemDto } from "./dto/update-entry.dto";
 
 const CACHE_TTL = 300; // 5 минут
 const CACHE_PREFIX = "dict";
@@ -41,7 +38,11 @@ export class DictionaryService {
 
     // Full-text search по переводам через tsvector (GIN-индекс),
     // fallback на ILIKE если tsvector-колонка ещё не создана
-    const ruTsQuery = ruQuery.replace(/[^\wа-яёА-ЯЁ\s]/g, "").trim().split(/\s+/).join(" & ");
+    const ruTsQuery = ruQuery
+      .replace(/[^\wа-яёА-ЯЁ\s]/g, "")
+      .trim()
+      .split(/\s+/)
+      .join(" & ");
 
     const langCondition =
       lang === "ru"
@@ -68,7 +69,9 @@ export class DictionaryService {
       (acc, f) => Prisma.sql`${acc} AND ${f}`,
     );
 
-    const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
+    const results = await this.prisma.$queryRaw<
+      (UnifiedSearchResult & { total_count: bigint })[]
+    >`
       SELECT
         e.id,
         e.word,
@@ -82,7 +85,8 @@ export class DictionaryService {
         e.domain,
         e."cefrLevel",
         e.sources,
-        similarity(e."wordNormalized", ${normalized}) AS score
+        similarity(e."wordNormalized", ${normalized}) AS score,
+        COUNT(*) OVER() AS total_count
       FROM "UnifiedEntry" e
       WHERE ${searchCondition}
       ORDER BY score DESC, length(e.word) ASC
@@ -90,13 +94,16 @@ export class DictionaryService {
       OFFSET ${offset}
     `;
 
-    const total = await this.countSearch(searchCondition);
+    const total = results.length > 0 ? Number(results[0].total_count) : 0;
+
+    // Убираем total_count из результатов
+    const data = results.map(({ total_count, ...rest }) => rest);
 
     // Если по чеченскому слову ничего не нашли — пробуем лемматизацию
     // (пользователь мог ввести косвенную форму: стагана → стаг)
     let lemmaHint: string[] | undefined;
     if (
-      results.length === 0 &&
+      data.length === 0 &&
       (lang === "nah" || lang === "unknown") &&
       offset === 0
     ) {
@@ -104,7 +111,7 @@ export class DictionaryService {
     }
 
     const response = {
-      data: results,
+      data,
       meta: { total, limit, offset, q, cefr, lang, lemmaHint },
     };
     await this.setCache(cacheKey, response);
@@ -119,10 +126,7 @@ export class DictionaryService {
 
     const results = await this.prisma.unifiedEntry.findMany({
       where: {
-        OR: [
-          { wordNormalized: normalized },
-          { variants: { has: normalized } },
-        ],
+        OR: [{ wordNormalized: normalized }, { variants: { has: normalized } }],
       },
       orderBy: { id: "asc" },
     });
@@ -163,14 +167,12 @@ export class DictionaryService {
   }
 
   async random(cefr?: string) {
-    const where = cefr ? Prisma.sql`WHERE e."cefrLevel" = ${cefr}` : Prisma.empty;
-    const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
-      SELECT e.* FROM "UnifiedEntry" e
-      ${where}
-      ORDER BY RANDOM()
-      LIMIT 1
-    `;
-    return results[0] ?? null;
+    const where = cefr ? { cefrLevel: cefr } : {};
+    const count = await this.prisma.unifiedEntry.count({ where });
+    if (count === 0) return null;
+
+    const skip = Math.floor(Math.random() * count);
+    return this.prisma.unifiedEntry.findFirst({ where, skip });
   }
 
   async phraseologySearch(q: string, limit = 20, offset = 0) {
@@ -204,7 +206,10 @@ export class DictionaryService {
   async updateEntry(id: number, dto: UpdateEntryDto) {
     await this.getById(id);
     const data = this.buildUpdateData(dto);
-    const result = await this.prisma.unifiedEntry.update({ where: { id }, data });
+    const result = await this.prisma.unifiedEntry.update({
+      where: { id },
+      data,
+    });
     await this.invalidateCache();
     return result;
   }
@@ -213,11 +218,16 @@ export class DictionaryService {
     const results: { id: number; success: boolean; error?: string }[] = [];
 
     await this.prisma.$transaction(async (tx) => {
+      // Проверяем существование всех записей одним запросом
+      const ids = items.map((i) => i.id);
+      const existing = await tx.unifiedEntry.findMany({
+        where: { id: { in: ids } },
+        select: { id: true },
+      });
+      const existingIds = new Set(existing.map((e) => e.id));
+
       for (const item of items) {
-        const entry = await tx.unifiedEntry.findUnique({
-          where: { id: item.id },
-        });
-        if (!entry) {
+        if (!existingIds.has(item.id)) {
           results.push({
             id: item.id,
             success: false,
@@ -250,9 +260,11 @@ export class DictionaryService {
     }
     if (dto.wordAccented !== undefined) data.wordAccented = dto.wordAccented;
     if (dto.partOfSpeech !== undefined) data.partOfSpeech = dto.partOfSpeech;
-    if (dto.partOfSpeechNah !== undefined) data.partOfSpeechNah = dto.partOfSpeechNah;
+    if (dto.partOfSpeechNah !== undefined)
+      data.partOfSpeechNah = dto.partOfSpeechNah;
     if (dto.nounClass !== undefined) data.nounClass = dto.nounClass;
-    if (dto.nounClassPlural !== undefined) data.nounClassPlural = dto.nounClassPlural;
+    if (dto.nounClassPlural !== undefined)
+      data.nounClassPlural = dto.nounClassPlural;
     if (dto.grammar !== undefined) data.grammar = dto.grammar;
     if (dto.meanings !== undefined)
       data.meanings = JSON.parse(JSON.stringify(dto.meanings));
@@ -268,15 +280,6 @@ export class DictionaryService {
     if (dto.entryType !== undefined) data.entryType = dto.entryType;
 
     return data;
-  }
-
-  private async countSearch(searchCondition: Prisma.Sql) {
-    const res = await this.prisma.$queryRaw<[{ count: bigint }]>`
-      SELECT COUNT(*) AS count
-      FROM "UnifiedEntry" e
-      WHERE ${searchCondition}
-    `;
-    return Number(res[0].count);
   }
 
   // -----------------------------------------------------------------------
@@ -303,10 +306,25 @@ export class DictionaryService {
   /** Сброс кэша search/lookup при изменении записей */
   private async invalidateCache(): Promise<void> {
     try {
-      const keys = await this.redis.keys(`${CACHE_PREFIX}:*`);
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-        this.logger.log(`Cache invalidated: ${keys.length} keys`);
+      let cursor = "0";
+      let deleted = 0;
+      do {
+        const [nextCursor, keys] = await this.redis.scan(
+          cursor,
+          "MATCH",
+          `${CACHE_PREFIX}:*`,
+          "COUNT",
+          100,
+        );
+        cursor = nextCursor;
+        if (keys.length > 0) {
+          await this.redis.del(...keys);
+          deleted += keys.length;
+        }
+      } while (cursor !== "0");
+
+      if (deleted > 0) {
+        this.logger.log(`Cache invalidated: ${deleted} keys`);
       }
     } catch {
       // cache failure is not critical

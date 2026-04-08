@@ -119,8 +119,7 @@ export class ConjugationService {
       ? present + (present.endsWith("у") ? "рг" : "рг")
       : null;
     const participlePast =
-      grammar.verbParticiple ??
-      (perfect ? perfect + "рг" : null);
+      grammar.verbParticiple ?? (perfect ? perfect + "рг" : null);
 
     // Масдар: инфинитив + -р
     const masdar = infinitive ? infinitive + "р" : null;

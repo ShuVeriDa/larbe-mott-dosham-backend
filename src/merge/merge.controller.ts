@@ -1,4 +1,11 @@
-import { Controller, Get, Param, Query } from "@nestjs/common";
+import {
+  Controller,
+  DefaultValuePipe,
+  Get,
+  Param,
+  ParseIntPipe,
+  Query,
+} from "@nestjs/common";
 import { MergeService } from "./merge.service";
 
 @Controller("merge")
@@ -7,8 +14,11 @@ export class MergeController {
 
   // GET /api/merge/preview/:slug?limit=5 — превью распарсенного файла
   @Get("preview/:slug")
-  preview(@Param("slug") slug: string, @Query("limit") limit?: string) {
-    return this.mergeService.preview(slug, limit ? parseInt(limit, 10) : 5);
+  preview(
+    @Param("slug") slug: string,
+    @Query("limit", new DefaultValuePipe(5), ParseIntPipe) limit?: number,
+  ) {
+    return this.mergeService.preview(slug, limit);
   }
 
   // GET /api/merge/unified-log — история слияния + что осталось

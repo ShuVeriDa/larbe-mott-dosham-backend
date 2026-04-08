@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Get,
   Param,
+  ParseIntPipe,
   Post,
   Query,
 } from "@nestjs/common";
@@ -25,10 +27,7 @@ export class SuggestionsController {
   @Auth()
   @ApiBearerAuth()
   @ApiOperation({ summary: "Submit a suggestion for an entry" })
-  create(
-    @User("id") userId: string,
-    @Body() dto: CreateSuggestionDto,
-  ) {
+  create(@User("id") userId: string, @Body() dto: CreateSuggestionDto) {
     return this.suggestionsService.create(
       userId,
       dto.entryId,
@@ -51,9 +50,13 @@ export class SuggestionsController {
   @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
   @ApiBearerAuth()
   @ApiOperation({ summary: "List all suggestions (admin)" })
-  list(@Query("status") status?: string) {
+  list(
+    @Query("status") status?: string,
+    @Query("limit", new DefaultValuePipe(50), ParseIntPipe) limit?: number,
+    @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset?: number,
+  ) {
     const s = status as SuggestionStatus | undefined;
-    return this.suggestionsService.list(s);
+    return this.suggestionsService.list(s, limit, offset);
   }
 
   /** Admin: одобрить или отклонить */
@@ -66,6 +69,11 @@ export class SuggestionsController {
     @User("id") reviewerId: string,
     @Body() dto: ReviewSuggestionDto,
   ) {
-    return this.suggestionsService.review(id, reviewerId, dto.decision, dto.comment);
+    return this.suggestionsService.review(
+      id,
+      reviewerId,
+      dto.decision,
+      dto.comment,
+    );
   }
 }

@@ -1,0 +1,59 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${PORT:-9666}:9666"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/larbe-mott-dosham?schema=public
+      - REDIS_URL=redis://redis:6379
+      - PORT=9666
+      - JWT_ACCESS_SECRET=${JWT_ACCESS_SECRET}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET}
+      - ACCESS_TOKEN_EXPIRES_IN=${ACCESS_TOKEN_EXPIRES_IN:-1h}
+      - REFRESH_TOKEN_EXPIRES_IN=${REFRESH_TOKEN_EXPIRES_IN:-7d}
+      - EXPIRE_DAY_REFRESH_TOKEN=${EXPIRE_DAY_REFRESH_TOKEN:-7}
+      - REFRESH_TOKEN_NAME=${REFRESH_TOKEN_NAME:-refreshToken}
+      - DOMAIN=${DOMAIN:-localhost}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3000}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@dosham.mottlarbe.com}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
+      - IMPORT_API_KEY=${IMPORT_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: larbe-mott-dosham
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

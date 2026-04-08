@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -15,6 +16,8 @@ import { LoginDto } from "src/user/dto/login.dto";
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private jwt: JwtService,
@@ -26,14 +29,15 @@ export class AuthService {
     const user = await this.validateUser(dto);
     const tokens = await this.issueTokens(user.id);
     await this.updateRefreshTokenHash(user.id, tokens.refreshToken);
+    this.logger.log(`Login successful: ${user.username} (${user.id})`);
     return { user, ...tokens };
   }
 
   async register(dto: CreateUserDto) {
-    const existingByUsername = await this.userService.getByUserName(
-      dto.username,
-    );
-    const existingByEmail = await this.userService.getByEmail(dto.email);
+    const [existingByUsername, existingByEmail] = await Promise.all([
+      this.userService.getByUserName(dto.username),
+      this.userService.getByEmail(dto.email),
+    ]);
 
     if (existingByUsername)
       throw new ConflictException("User with this username already exists");
@@ -45,16 +49,17 @@ export class AuthService {
 
     const tokens = await this.issueTokens(user.id);
     await this.updateRefreshTokenHash(user.id, tokens.refreshToken);
+    this.logger.log(`Registration: ${user.username} (${user.id})`);
     return { user, ...tokens };
   }
 
-  async recordSession(
-    userId: string,
-    ipAddress?: string,
-    userAgent?: string,
-  ) {
+  async recordSession(userId: string, ipAddress?: string, userAgent?: string) {
     await this.prisma.userSession.create({
-      data: { userId, ipAddress: ipAddress ?? null, userAgent: userAgent ?? null },
+      data: {
+        userId,
+        ipAddress: ipAddress ?? null,
+        userAgent: userAgent ?? null,
+      },
     });
   }
 
@@ -124,6 +129,7 @@ export class AuthService {
 
   async logout(userId: string) {
     await this.clearRefreshTokenHash(userId);
+    this.logger.log(`Logout: ${userId}`);
   }
 
   // -----------------------------------------------------------------------
@@ -137,10 +143,18 @@ export class AuthService {
         ],
       },
     });
-    if (!user) throw new NotFoundException("User not found");
+    if (!user) {
+      this.logger.warn(`Login failed: unknown user "${dto.username}"`);
+      throw new NotFoundException("User not found");
+    }
 
     const isValid = await verify(user.password, dto.password);
-    if (!isValid) throw new UnauthorizedException("Invalid password");
+    if (!isValid) {
+      this.logger.warn(
+        `Login failed: wrong password for "${dto.username}" (${user.id})`,
+      );
+      throw new UnauthorizedException("Invalid password");
+    }
 
     const { password, hashedRefreshToken, ...safeUser } = user;
     return safeUser;
@@ -150,8 +164,7 @@ export class AuthService {
     if (this.configService.get("NODE_ENV") === "production") return true;
 
     const domain = this.configService.get<string>("DOMAIN");
-    if (domain && domain !== "localhost" && domain !== "127.0.0.1")
-      return true;
+    if (domain && domain !== "localhost" && domain !== "127.0.0.1") return true;
 
     return false;
   }

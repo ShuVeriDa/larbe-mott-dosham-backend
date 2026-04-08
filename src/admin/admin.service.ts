@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import { RoleName } from "@prisma/client";
+import { Prisma, RoleName } from "@prisma/client";
 import * as crypto from "crypto";
 import { PrismaService } from "src/prisma.service";
 import { MergeService } from "src/merge/merge.service";
@@ -158,27 +158,31 @@ export class AdminService {
   }
 
   async findProblems(type?: string, limit = 50) {
-    const condition = (() => {
-      switch (type) {
-        case "no-meanings":
-          return `jsonb_array_length(meanings::jsonb) = 0`;
-        case "no-class":
-          return `"nounClass" IS NULL AND "partOfSpeech" = 'сущ.'`;
-        case "no-pos":
-          return `"partOfSpeech" IS NULL`;
-        case "no-examples":
-          return `NOT meanings::text LIKE '%examples%'`;
-        default:
-          return `"partOfSpeech" IS NULL OR ("nounClass" IS NULL AND "partOfSpeech" = 'сущ.')`;
-      }
-    })();
+    const select = Prisma.sql`SELECT id, word, "partOfSpeech", "nounClass", "entryType", sources FROM "UnifiedEntry"`;
 
-    return this.prisma.$queryRaw`
-      SELECT id, word, "partOfSpeech", "nounClass", "entryType", sources
-      FROM "UnifiedEntry"
-      WHERE ${this.prisma.$queryRawUnsafe(condition)}
-      LIMIT ${limit}
-    `;
+    switch (type) {
+      case "no-meanings":
+        return this.prisma.$queryRaw`${select}
+          WHERE jsonb_array_length(meanings::jsonb) = 0
+          LIMIT ${limit}`;
+      case "no-class":
+        return this.prisma.$queryRaw`${select}
+          WHERE "nounClass" IS NULL AND "partOfSpeech" = 'сущ.'
+          LIMIT ${limit}`;
+      case "no-pos":
+        return this.prisma.$queryRaw`${select}
+          WHERE "partOfSpeech" IS NULL
+          LIMIT ${limit}`;
+      case "no-examples":
+        return this.prisma.$queryRaw`${select}
+          WHERE NOT meanings::text LIKE '%examples%'
+          LIMIT ${limit}`;
+      default:
+        return this.prisma.$queryRaw`${select}
+          WHERE "partOfSpeech" IS NULL
+            OR ("nounClass" IS NULL AND "partOfSpeech" = 'сущ.')
+          LIMIT ${limit}`;
+    }
   }
 
   // -----------------------------------------------------------------------

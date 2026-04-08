@@ -69,7 +69,7 @@ export class MergeService {
   // --- Status ---
   async status() {
     const parsedDir = path.resolve(process.cwd(), PARSED_DIR);
-    let parsedFiles: { slug: string; entries: number }[] = [];
+    const parsedFiles: { slug: string; entries: number }[] = [];
     try {
       const files = (await fs.readdir(parsedDir)).filter((f) =>
         f.endsWith(".json"),

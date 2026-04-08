@@ -10,9 +10,7 @@ describe("IsmailovCeRuParser", () => {
       },
     ]);
     expect(result).toHaveLength(1);
-    expect(result[0].meanings[0].translation).toContain(
-      "указательный палец",
-    );
+    expect(result[0].meanings[0].translation).toContain("указательный палец");
   });
 
   it("parses word with variant in parentheses", () => {

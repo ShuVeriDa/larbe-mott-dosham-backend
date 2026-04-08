@@ -1,7 +1,9 @@
 import {
   Controller,
+  DefaultValuePipe,
   Delete,
   Get,
+  ParseIntPipe,
   Query,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
@@ -20,9 +22,9 @@ export class SearchHistoryController {
   @ApiOperation({ summary: "Get recent search history" })
   getRecent(
     @User("id") userId: string,
-    @Query("limit") limit?: number,
+    @Query("limit", new DefaultValuePipe(20), ParseIntPipe) limit?: number,
   ) {
-    return this.searchHistoryService.getRecent(userId, limit ? Number(limit) : 20);
+    return this.searchHistoryService.getRecent(userId, limit);
   }
 
   @Delete()

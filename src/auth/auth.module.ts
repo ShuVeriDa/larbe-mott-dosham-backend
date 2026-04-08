@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { ConfigModule, ConfigService } from "@nestjs/config";
 import { JwtModule, JwtService } from "@nestjs/jwt";
 import { PrismaService } from "src/prisma.service";
+import { RedisModule } from "src/redis/redis.module";
 import { UserService } from "src/user/user.service";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
@@ -24,6 +25,7 @@ import { PermissionsService } from "./permissions/permissions.service";
   exports: [PermissionsService],
   imports: [
     ConfigModule,
+    RedisModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

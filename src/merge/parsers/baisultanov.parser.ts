@@ -136,9 +136,7 @@ function parseWord(raw: string): ParsedWord {
   // e.g. "Тахвала (й, д, б). ФЕ: тахваьлла" → "Тахвала (й, д, б)"
   // e.g. "Санкхала. Сансара" → "Санкхала"
   // Look for "). " or ")." or ") Text" or just ". Text" after the word portion
-  const defLeakMatch = text.match(
-    /^(.+?\))\s*\.?\s*(?:[А-ЯЁа-яёӀA-Za-z].+)$/,
-  );
+  const defLeakMatch = text.match(/^(.+?\))\s*\.?\s*(?:[А-ЯЁа-яёӀA-Za-z].+)$/);
   if (defLeakMatch) {
     text = defLeakMatch[1].trim();
   } else {
@@ -255,7 +253,8 @@ function parseWord(raw: string): ParsedWord {
     }
     if (parenResult.grammar) {
       grammar = grammar ?? {};
-      if (parenResult.grammar.plural) grammar.plural = parenResult.grammar.plural;
+      if (parenResult.grammar.plural)
+        grammar.plural = parenResult.grammar.plural;
     }
     if (parenResult.variants) {
       variants.push(...parenResult.variants);
@@ -293,10 +292,7 @@ interface ParenResult {
   variants?: string[];
 }
 
-function parseParenContent(
-  content: string,
-  headword: string,
-): ParenResult {
+function parseParenContent(content: string, headword: string): ParenResult {
   let nounClass: string | undefined;
   const grammar: GrammarInfo = {};
   const variants: string[] = [];
@@ -327,7 +323,10 @@ function parseParenContent(
   if (colonParts.length === 1) {
     // No colon — simple case
     // Try to split by commas to handle mixed content like "баӀбевларш, й, д"
-    const commaParts = colonParts[0].split(",").map((p) => p.trim()).filter(Boolean);
+    const commaParts = colonParts[0]
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
 
     if (commaParts.length > 1) {
       // Multiple comma-separated tokens — classify each
@@ -404,8 +403,11 @@ function parseParenContent(
 
       // Otherwise treat as alternate stem for the next part
       // Skip Russian abbreviations/words that aren't real stems
-      if (/[а-яёА-ЯЁӀ]{2,}/.test(part) && !part.includes(" ") &&
-          !/^напр\.?$|^например$|^и\.кх|^д1\.|^кх\.|^т\.п/.test(part)) {
+      if (
+        /[а-яёА-ЯЁӀ]{2,}/.test(part) &&
+        !part.includes(" ") &&
+        !/^напр\.?$|^например$|^и\.кх|^д1\.|^кх\.|^т\.п/.test(part)
+      ) {
         alternateStem = part;
         continue;
       }
@@ -698,9 +700,7 @@ function parseMeanings(text: string): Meaning[] {
     .trim();
 
   // Remove remaining <b>Word.</b> patterns (period inside bold = sub-entry header)
-  cleanedText = cleanedText
-    .replace(/<b>[^<]+\.<\/b>\s*/g, "")
-    .trim();
+  cleanedText = cleanedText.replace(/<b>[^<]+\.<\/b>\s*/g, "").trim();
 
   // Clean HTML, but preserve text
   let cleaned = stripHtml(cleanText(cleanedText));
@@ -724,7 +724,10 @@ function parseMeanings(text: string): Meaning[] {
     // Strip trailing style/origin labels: "Вертолёт.Калька" → "Вертолёт"
     // Also "Калька из русск. яз", "Калька из русского языка:" etc.
     translation = translation
-      .replace(/\.?\s*Калька(?:\s+из\s+[а-яё]+\.?\s*(?:яз(?:ыка?)?\.?)?)?:?\s*$/, "")
+      .replace(
+        /\.?\s*Калька(?:\s+из\s+[а-яё]+\.?\s*(?:яз(?:ыка?)?\.?)?)?:?\s*$/,
+        "",
+      )
       .replace(/\.?\s*(?:Неол|Архаич)\.?\s*$/, "")
       .replace(/[.\s]+$/, "")
       .trim();

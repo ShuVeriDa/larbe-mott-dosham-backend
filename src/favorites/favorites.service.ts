@@ -10,12 +10,23 @@ export class FavoritesService {
   constructor(private readonly prisma: PrismaService) {}
 
   async getAll(userId: string) {
-    const favorites = await this.prisma.userFavorite.findMany({
+    return this.prisma.userFavorite.findMany({
       where: { userId },
-      include: { entry: true },
+      include: {
+        entry: {
+          select: {
+            id: true,
+            word: true,
+            wordAccented: true,
+            partOfSpeech: true,
+            nounClass: true,
+            cefrLevel: true,
+            domain: true,
+          },
+        },
+      },
       orderBy: { createdAt: "desc" },
     });
-    return favorites.map((f) => ({ id: f.id, createdAt: f.createdAt, entry: f.entry }));
   }
 
   async toggle(userId: string, entryId: number) {

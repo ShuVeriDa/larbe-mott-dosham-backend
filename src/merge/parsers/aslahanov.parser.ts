@@ -190,7 +190,11 @@ function extractClassesFromRest(text: string): ExtraGrammar {
 
 /** Merge extra classes/plural from rest into parsed grammar result. */
 function mergeExtraGrammar(
-  parsed: { grammar: GrammarInfo; nounClass?: string; nounClassPlural?: string },
+  parsed: {
+    grammar: GrammarInfo;
+    nounClass?: string;
+    nounClassPlural?: string;
+  },
   extra: ExtraGrammar,
 ): void {
   if (extra.classes.length === 0 && !extra.plural) return;

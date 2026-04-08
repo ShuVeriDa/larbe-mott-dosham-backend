@@ -3,6 +3,7 @@ import {
   type OnModuleInit,
   Injectable,
 } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 
@@ -11,33 +12,23 @@ export class PrismaService
   extends PrismaClient
   implements OnModuleInit, OnModuleDestroy
 {
-  constructor() {
-    const connectionString = process.env["DATABASE_URL"];
-    if (!connectionString) {
-      throw new Error("DATABASE_URL environment variable is not set");
-    }
+  constructor(private readonly configService: ConfigService) {
+    const connectionString = configService.getOrThrow<string>("DATABASE_URL");
+    const nodeEnv = configService.get<string>("NODE_ENV") ?? "development";
 
-    const adapter = new PrismaPg({
-      connectionString: process.env.DATABASE_URL!,
-    });
+    const adapter = new PrismaPg({ connectionString });
     super({
       adapter,
-      log:
-        process.env.NODE_ENV === "development"
-          ? ["query", "error", "warn"]
-          : ["error"],
+      log: nodeEnv === "development" ? ["query", "error", "warn"] : ["error"],
     });
   }
+
   async onModuleInit() {
     await this.$connect();
-    // pg_trgm нужен для функции similarity() в поиске
-    await this.$executeRawUnsafe(
-      `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
-    );
+    await this.$executeRaw`CREATE EXTENSION IF NOT EXISTS pg_trgm`;
   }
 
   async onModuleDestroy() {
-    // Закрываем соединение при завершении
     await this.$disconnect();
   }
 }

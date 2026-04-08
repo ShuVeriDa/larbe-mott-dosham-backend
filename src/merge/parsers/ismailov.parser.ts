@@ -93,7 +93,6 @@ function extractPlainPos(text: string): string | undefined {
   return normalizePos(normalized);
 }
 
-
 /** Парсит ismailov_ce_ru.json: word = чеченский, перевод = русский */
 export function parseIsmailovCeRuEntries(raws: RawDictEntry[]): ParsedEntry[] {
   const unique = dedup(raws);
@@ -142,7 +141,9 @@ export function parseIsmailovCeRuEntries(raws: RawDictEntry[]): ParsedEntry[] {
     }
 
     const wordClean = stripStressMarks(stripHtml(cleanText(wordText)).trim());
-    const word = wordClean ? wordClean[0].toLowerCase() + wordClean.slice(1) : wordClean;
+    const word = wordClean
+      ? wordClean[0].toLowerCase() + wordClean.slice(1)
+      : wordClean;
     if (!word) continue;
 
     // --- Парсим translate ---
@@ -213,8 +214,12 @@ export function parseIsmailovCeRuEntries(raws: RawDictEntry[]): ParsedEntry[] {
 
       const dashIdx = exText.indexOf(" – ");
       if (dashIdx !== -1) {
-        const nah = stripStressMarks(stripHtml(exText.substring(0, dashIdx)).trim());
-        const ru = stripStressMarks(stripHtml(exText.substring(dashIdx + 3)).trim());
+        const nah = stripStressMarks(
+          stripHtml(exText.substring(0, dashIdx)).trim(),
+        );
+        const ru = stripStressMarks(
+          stripHtml(exText.substring(dashIdx + 3)).trim(),
+        );
         if (nah && ru) {
           examples.push({ nah, ru });
         }
@@ -292,8 +297,7 @@ export function parseIsmailovCeRuEntries(raws: RawDictEntry[]): ParsedEntry[] {
  * Regex для класса в plain text translate: (ду), (ю), (ву-бу), (ву-ю-бу)
  * Одиночные и составные, без HTML тегов.
  */
-const RU_CE_CLASS_RE =
-  /\((?:(?:бу|ду|йу|ву|ю|б)(?:-(?:бу|ду|йу|ву|ю|б))*)\)/;
+const RU_CE_CLASS_RE = /\((?:(?:бу|ду|йу|ву|ю|б)(?:-(?:бу|ду|йу|ву|ю|б))*)\)/;
 
 /** POS в word поле: 'а (союз)', 'бдительный (прилаг.)' */
 const WORD_POS_RE =
@@ -432,14 +436,21 @@ export function parseIsmailovRuCeEntries(raws: RawDictEntry[]): ParsedEntry[] {
       };
 
       const grammar = pluralSuffix
-        ? { plural: buildPluralForm(parsed.translation, pluralSuffix), pluralClass: nounClassPlural }
+        ? {
+            plural: buildPluralForm(parsed.translation, pluralSuffix),
+            pluralClass: nounClassPlural,
+          }
         : undefined;
 
       // Дедупликация: ключ = word + nounClass
       const dedupeKey = `${word}|${nounClass ?? ""}`;
       const existing = entryMap.get(dedupeKey);
       if (existing) {
-        if (!existing.meanings.some((em) => em.translation === meaning.translation)) {
+        if (
+          !existing.meanings.some(
+            (em) => em.translation === meaning.translation,
+          )
+        ) {
           existing.meanings.push(meaning);
         }
         if (!existing.nounClass && nounClass) existing.nounClass = nounClass;

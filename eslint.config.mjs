@@ -27,15 +27,56 @@ export default [
 
   {
     rules: {
-      "@typescript-eslint/no-explicit-any": "off",
-      "@typescript-eslint/no-floating-promises": "warn",
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/no-floating-promises": "error",
       "@typescript-eslint/no-unsafe-argument": "warn",
-      // "@typescript-eslint/require-await": "off",
+      "@typescript-eslint/no-unsafe-assignment": "warn",
+      "@typescript-eslint/no-unsafe-member-access": "warn",
+      "@typescript-eslint/no-unsafe-call": "warn",
+      "@typescript-eslint/no-unsafe-return": "warn",
+      "@typescript-eslint/no-unused-vars": [
+        "warn",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
       "prettier/prettier": ["error", { endOfLine: "auto" }],
       "@typescript-eslint/interface-name-prefix": "off",
       "@typescript-eslint/explicit-function-return-type": "off",
       "@typescript-eslint/explicit-module-boundary-types": "off",
-      "@typescript-eslint/no-unused-vars": "off",
+      "no-console": ["warn", { allow: ["warn", "error"] }],
+    },
+  },
+
+  // Тестовые файлы: разрешаем any-моки
+  {
+    files: ["**/*.spec.ts", "**/*.e2e-spec.ts"],
+    rules: {
+      "@typescript-eslint/no-explicit-any": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-argument": "off",
+      "@typescript-eslint/no-unsafe-return": "off",
+    },
+  },
+
+  // CLI: console.log допустим
+  {
+    files: ["**/cli.ts"],
+    rules: {
+      "no-console": "off",
+    },
+  },
+
+  // Парсеры и ETL pipeline: сложные regex + untyped JSON
+  {
+    files: ["**/parsers/**/*.ts", "**/merge-utils.ts", "**/merge/**/*.ts"],
+    rules: {
+      "no-useless-escape": "off",
+      "no-misleading-character-class": "off",
+      "@typescript-eslint/no-unsafe-assignment": "warn",
+      "@typescript-eslint/no-unsafe-member-access": "warn",
+      "@typescript-eslint/no-unsafe-call": "warn",
+      "@typescript-eslint/no-unsafe-return": "warn",
     },
   },
 ];

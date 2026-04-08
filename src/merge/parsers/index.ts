@@ -5,10 +5,16 @@ import { parseBaisultanovEntries } from "./baisultanov.parser";
 import { parseAbdurashidovEntries } from "./abdurashidov.parser";
 import { parseKarasaevEntries } from "./karasaev.parser";
 import { parseAslahanovEntries } from "./aslahanov.parser";
-import { parseAnatomyCeRuEntries, parseAnatomyRuCeEntries } from "./anatomy.parser";
+import {
+  parseAnatomyCeRuEntries,
+  parseAnatomyRuCeEntries,
+} from "./anatomy.parser";
 import { parseComputerEntries } from "./computer.parser";
 import { parseDaukaevEntries } from "./daukaev.parser";
-import { parseIsmailovCeRuEntries, parseIsmailovRuCeEntries } from "./ismailov.parser";
+import {
+  parseIsmailovCeRuEntries,
+  parseIsmailovRuCeEntries,
+} from "./ismailov.parser";
 import { parseCollectedEntries } from "./collected.parser";
 import { parseNeologismEntries } from "./neologisms.parser";
 
@@ -50,4 +56,11 @@ export function getParser(slug: string): BatchParser {
   }
 }
 
-export type { ParsedEntry, RawDictEntry, GrammarInfo, Meaning, Phrase, Citation } from "./types";
+export type {
+  ParsedEntry,
+  RawDictEntry,
+  GrammarInfo,
+  Meaning,
+  Phrase,
+  Citation,
+} from "./types";

@@ -1,10 +1,13 @@
-import { ValidationPipe } from "@nestjs/common";
+import { Logger, ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import cookieParser from "cookie-parser";
+import helmet from "helmet";
 import * as dotenv from "dotenv";
 import { AppModule } from "./app.module";
+import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
+import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
 
 async function bootstrap() {
   dotenv.config();
@@ -13,16 +16,21 @@ async function bootstrap() {
   const configService = app.get(ConfigService);
 
   const port = configService.get<number>("PORT") ?? 9666;
-  const allowedOrigins =
-    configService.get<string>("ALLOWED_ORIGINS")?.split(",") ??
-    "http://localhost:3000";
+  const rawOrigins = configService.get<string>("ALLOWED_ORIGINS");
+  const allowedOrigins = rawOrigins?.trim()
+    ? rawOrigins
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : ["http://localhost:3000"];
   const nodeEnv = configService.get<string>("NODE_ENV") ?? "development";
 
-  app.setGlobalPrefix("api"); // Установка префикса 'api' для всех маршрутов в приложении
-  app.use(cookieParser()); // Подключение middleware для парсинга cookie
+  app.setGlobalPrefix("api");
+  app.use(helmet());
+  app.use(cookieParser());
 
   app.enableCors({
-    origin: allowedOrigins ?? "*",
+    origin: allowedOrigins,
     credentials: true, // Включение поддержки отправки cookie через CORS
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: [
@@ -39,12 +47,15 @@ async function bootstrap() {
     optionsSuccessStatus: 204,
   });
 
+  app.useGlobalFilters(new AllExceptionsFilter());
+  app.useGlobalInterceptors(new LoggingInterceptor());
+
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
       stopAtFirstError: true,
       transform: true,
-    }), // Включение глобальной валидации данных: удаление невалидных полей (whitelist) и остановка на первой ошибке
+    }),
   );
 
   // Swagger only in development
@@ -82,6 +93,8 @@ async function bootstrap() {
   }
 
   await app.listen(port);
-  console.log(`🚀 Application is running on: http://localhost:${port}`);
+  new Logger("Bootstrap").log(
+    `Application is running on: http://localhost:${port}`,
+  );
 }
-bootstrap();
+void bootstrap();

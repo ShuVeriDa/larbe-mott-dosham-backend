@@ -17,7 +17,7 @@ export class UserService {
     const user = await this.prisma.user.findUnique({ where: { id } });
     if (!user) throw new NotFoundException("User not found");
 
-    const { password, hashedRefreshToken, ...safeUser } = user;
+    const { password: _password, hashedRefreshToken: _hrt, ...safeUser } = user;
     return safeUser;
   }
 

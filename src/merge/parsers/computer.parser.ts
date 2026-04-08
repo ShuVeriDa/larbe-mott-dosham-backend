@@ -107,7 +107,9 @@ export function parseComputerEntries(raws: RawDictEntry[]): ParsedEntry[] {
       .trim();
 
     results.push({
-      word: wordClean ? wordClean[0].toLowerCase() + wordClean.slice(1) : wordClean,
+      word: wordClean
+        ? wordClean[0].toLowerCase() + wordClean.slice(1)
+        : wordClean,
       wordAccented: wordAccented !== wordClean ? wordAccented : undefined,
       nounClass,
       nounClassPlural,

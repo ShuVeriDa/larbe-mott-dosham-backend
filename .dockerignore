@@ -1,0 +1,16 @@
+node_modules
+dist
+coverage
+.git
+.github
+.vscode
+.claude
+.env
+.env.*
+!.env.example
+dictionaries
+*.log
+*.md
+!README.md
+test-lookup-result*.txt
+missing-ids.md

@@ -1,10 +1,5 @@
 import type { ParsedEntry, RawDictEntry } from "./types";
-import {
-  cleanText,
-  dedup,
-  stripHtml,
-  stripStressMarks,
-} from "./utils";
+import { cleanText, dedup, stripHtml, stripStressMarks } from "./utils";
 
 /**
  * Парсер для геологического словаря Даукаева (daukaev_ru_ce.json).
@@ -138,7 +133,8 @@ export function parseDaukaevEntries(raws: RawDictEntry[]): ParsedEntry[] {
     else if (classification === "п.н.") domain = "geology:paleontology";
 
     const label = markers.size > 0 ? [...markers].join(", ") : undefined;
-    const note = wordDescriptions.length > 0 ? wordDescriptions.join("; ") : undefined;
+    const note =
+      wordDescriptions.length > 0 ? wordDescriptions.join("; ") : undefined;
 
     results.push({
       word: stripStressMarks(word),

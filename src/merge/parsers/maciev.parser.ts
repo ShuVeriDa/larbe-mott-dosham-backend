@@ -52,8 +52,15 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
 
   // Фикс: word1 заканчивается запятой ("цӀийIано,") + translate начинается с формы + POS:
   //   "цӀийIанорг прич. кровопролитный" → word = "цӀийIано, цӀийIанорг", translate = "прич. ..."
-  if (rawWord1.trim().endsWith(",") && !translate.startsWith("<") && !translate.startsWith("[") && !translate.startsWith("*")) {
-    const formPosMatch = translate.match(/^(\S+)\s+(прич|масд|нареч|прил|сущ|гл)\.\s*/);
+  if (
+    rawWord1.trim().endsWith(",") &&
+    !translate.startsWith("<") &&
+    !translate.startsWith("[") &&
+    !translate.startsWith("*")
+  ) {
+    const formPosMatch = translate.match(
+      /^(\S+)\s+(прич|масд|нареч|прил|сущ|гл)\.\s*/,
+    );
     if (formPosMatch) {
       rawWord1 = rawWord1.trim() + " " + formPosMatch[1];
       rawWord = rawWord.trim().endsWith(",") ? rawWord1 : rawWord;
@@ -89,14 +96,20 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
       ? remaining.match(/^(\*?\s*[^[\]]{5,})\]/)
       : null;
   if (bracketMatch || missingOpenBracket) {
-    const grammarBlock = bracketMatch ? bracketMatch[1] : missingOpenBracket![1];
+    const grammarBlock = bracketMatch
+      ? bracketMatch[1]
+      : missingOpenBracket![1];
     const fullMatch = bracketMatch ? bracketMatch[0] : missingOpenBracket![0];
     remaining = remaining.substring(fullMatch.length).trim();
 
     const parsed = parseGrammarBlock(grammarBlock);
     grammar = parsed.grammar;
     nounClass = parsed.nounClass;
-  } else if (!remaining.startsWith("[") && !remaining.includes("]") && !/<[bi]>/.test(remaining.slice(0, 60))) {
+  } else if (
+    !remaining.startsWith("[") &&
+    !remaining.includes("]") &&
+    !/<[bi]>/.test(remaining.slice(0, 60))
+  ) {
     // Нет скобок и нет HTML — возможно grammar напрямую: "форма1, форма2, форма3 перевод"
     // Определяем boundary: берём слова до первого явно русского
     const words = remaining.split(/\s+/);
@@ -105,15 +118,24 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
     for (let i = 0; i < words.length && i < 6; i++) {
       const w = words[i].replace(/[,*]+$/, "");
       if (!w) continue;
-      if (isRussianWord(w)) { grammarEnd = i; break; }
+      if (isRussianWord(w)) {
+        grammarEnd = i;
+        break;
+      }
       // Слово должно быть чеченским (не пустым, не содержать точки — иначе это не grammar)
-      if (/\./.test(w)) { grammarEnd = 0; break; }
+      if (/\./.test(w)) {
+        grammarEnd = 0;
+        break;
+      }
       grammarEnd = i + 1;
       hasGrammarWords = true;
     }
     // Только если нашли 2+ форм перед русским словом — считаем это grammar
     if (hasGrammarWords && grammarEnd >= 2) {
-      const grammarBlock = words.slice(0, grammarEnd).join(" ").replace(/[,\s]+$/, "");
+      const grammarBlock = words
+        .slice(0, grammarEnd)
+        .join(" ")
+        .replace(/[,\s]+$/, "");
       const afterGrammar = words.slice(grammarEnd).join(" ").trim();
       if (afterGrammar) {
         remaining = afterGrammar;
@@ -132,11 +154,17 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
       const w = words[i].replace(/[,*]+$/, "");
       if (!w) continue;
       // Первое явно русское слово — конец grammar блока
-      if (isRussianWord(w)) { grammarEnd = i; break; }
+      if (isRussianWord(w)) {
+        grammarEnd = i;
+        break;
+      }
       grammarEnd = i + 1;
     }
     if (grammarEnd > 0) {
-      const grammarBlock = words.slice(0, grammarEnd).join(" ").replace(/[,\s]+$/, "");
+      const grammarBlock = words
+        .slice(0, grammarEnd)
+        .join(" ")
+        .replace(/[,\s]+$/, "");
       const afterGrammar = words.slice(grammarEnd).join(" ").trim();
       if (afterGrammar) {
         remaining = afterGrammar;
@@ -200,7 +228,9 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
   if (!resolvedPos) {
     // a) Из деривационной пометы в note: "прич. от X", "масд. от X", "прил. к X" и т.п.
     if (meanings.length > 0 && meanings[0].note) {
-      const posFromNote = meanings[0].note.match(/^(прич|масд|прил|нареч|сущ|гл|числ|дееприч)\./);
+      const posFromNote = meanings[0].note.match(
+        /^(прич|масд|прил|нареч|сущ|гл|числ|дееприч)\./,
+      );
       if (posFromNote) resolvedPos = normalizePos(posFromNote[0]);
     }
     // b) По грамматике: verb forms → гл., nounClass/падежи → сущ.
@@ -229,21 +259,36 @@ export function parseMacievEntry(raw: RawDictEntry): ParsedEntry | null {
       const mainTrans = meanings[0].translation.trim();
       const w0 = stripStressMarks(word.split(",")[0]).toLowerCase().trim();
       // Исключаем составные слова с дефисом (аьчк-пхьар, мангал-комар)
-      if (/(?:яр|ар)$/.test(w0) && !word.includes(",") && !w0.includes("-") && mainTrans && !/(?:ть|чь|сти|сть)(ся)?$/.test(mainTrans.split(/\s+/)[0])) {
+      if (
+        /(?:яр|ар)$/.test(w0) &&
+        !word.includes(",") &&
+        !w0.includes("-") &&
+        mainTrans &&
+        !/(?:ть|чь|сти|сть)(ся)?$/.test(mainTrans.split(/\s+/)[0])
+      ) {
         resolvedPos = "масд.";
       }
     }
     // e) По переводу: начинается с русского инфинитива → гл.
     if (!resolvedPos && meanings.length > 0) {
       const firstWord = meanings[0].translation.trim().split(/\s+/)[0];
-      if (firstWord && /(?:ть|чь|сти|сть)(ся)?$/.test(firstWord.toLowerCase())) {
+      if (
+        firstWord &&
+        /(?:ть|чь|сти|сть)(ся)?$/.test(firstWord.toLowerCase())
+      ) {
         resolvedPos = "гл.";
       }
     }
     // f) По переводу: начинается с русского прилагательного → прил.
     if (!resolvedPos && meanings.length > 0) {
       const firstWord = meanings[0].translation.trim().split(/\s+/)[0];
-      if (firstWord && /(?:ный|ная|ное|ные|ной|ской|ская|ское|ские|вый|вая|тый|тая|нный|нная|щий|щая|шая|ший)$/.test(firstWord.toLowerCase()) && firstWord.length > 4) {
+      if (
+        firstWord &&
+        /(?:ный|ная|ное|ные|ной|ской|ская|ское|ские|вый|вая|тый|тая|нный|нная|щий|щая|шая|ший)$/.test(
+          firstWord.toLowerCase(),
+        ) &&
+        firstWord.length > 4
+      ) {
         resolvedPos = "прил.";
       }
     }
@@ -414,7 +459,11 @@ function parseGrammarBlock(block: string): {
   return { grammar, nounClass };
 }
 
-function parseMeanings(text: string, posNote?: string, hasStar?: boolean): Meaning[] {
+function parseMeanings(
+  text: string,
+  posNote?: string,
+  hasStar?: boolean,
+): Meaning[] {
   const stripped = cleanText(text);
 
   // Деривационные/ссылочные пометы (<i>масд. от </i>, <i>прил. к </i>, <i>см.</i> и т.п.)
@@ -568,10 +617,7 @@ function parseNormalMeanings(stripped: string, hasStar?: boolean): Meaning[] {
     if (boldExamples.length > 0 || /<b>/.test(withoutProverbs)) {
       // Есть <b> разметка — стандартный путь
       translation = withoutProverbs
-        .replace(
-          /<b>[^<]*<\/b>(?:[^<;◊]|<i>[^<]*<\/i>|;\s*(?=[а-е]\)))*/g,
-          "",
-        )
+        .replace(/<b>[^<]*<\/b>(?:[^<;◊]|<i>[^<]*<\/i>|;\s*(?=[а-е]\)))*/g, "")
         .replace(/<[^>]*>/g, "")
         .replace(/\s+/g, " ")
         .replace(/(?:\s*;\s*){2,}/g, "; ")
@@ -721,8 +767,7 @@ function isRussianWord(word: string): boolean {
   // -ец (деятель)
   if (/ец$/.test(w) && w.length > 3) return true;
   // 3-е лицо глаголов: -ет, -ёт, -ит, -ут, -ют, -ат, -ят, -ются, -ется, -ятся
-  if (/(?:ет|ёт|ит|ут|ют|ат|ят)(?:ся)?$/.test(w) && w.length > 4)
-    return true;
+  if (/(?:ет|ёт|ит|ут|ют|ат|ят)(?:ся)?$/.test(w) && w.length > 4) return true;
   // Множественное число: -ова, -ева, -ы (после характерных суффиксов)
   if (/(?:слов[аоуе]|книг[аоуе])/.test(w)) return true;
   // перен., букв., уст., погов., прил., нареч. и т.п. — словарные пометы и части речи
@@ -739,9 +784,7 @@ function isRussianWord(word: string): boolean {
  * Разбивает одну «;»-отделённую часть на чеченский пример + русский перевод.
  * Возвращает null, если не удаётся определить границу.
  */
-function splitNahRu(
-  segment: string,
-): { nah: string; ru: string } | null {
+function splitNahRu(segment: string): { nah: string; ru: string } | null {
   const words = segment.split(/\s+/);
   for (let i = 0; i < words.length; i++) {
     if (isChechenWord(words[i])) continue;
@@ -804,7 +847,10 @@ function extractPlainExamples(
     }
   }
 
-  const parts = processText.split(";").map((s) => s.trim()).filter(Boolean);
+  const parts = processText
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
   if (starTranslation === undefined && parts.length < 2) {
     return { translation: text.replace(/[;.\s]+$/, "").trim(), examples: [] };
   }

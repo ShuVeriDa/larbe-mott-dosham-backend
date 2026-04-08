@@ -72,7 +72,8 @@ async function runCommand(svc: MergeService, command: string, args: string[]) {
     // --- Откат ---
     case "rollback": {
       const step = args[0];
-      if (step === undefined) throw new Error("Укажите номер шага (0 = пустой)");
+      if (step === undefined)
+        throw new Error("Укажите номер шага (0 = пустой)");
       return svc.rollback(parseInt(step, 10));
     }
 
@@ -94,7 +95,8 @@ async function runCommand(svc: MergeService, command: string, args: string[]) {
 }
 
 function printHelp() {
-  console.log(`
+  console.log(
+    `
 Пайплайн-команды для MottLarbe:
 
   npm run pipeline -- parse <slug|all>     Парсинг словаря (или всех)
@@ -104,7 +106,8 @@ function printHelp() {
   npm run pipeline -- reset                Полный сброс (unified + снэпшоты + лог)
   npm run pipeline -- load                 Загрузка unified.json в БД
   npm run pipeline -- improve              Очистка и нормализация unified.json
-  `.trim());
+  `.trim(),
+  );
 }
 
-main();
+void main();
