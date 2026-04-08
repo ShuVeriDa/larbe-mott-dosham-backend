@@ -69,8 +69,11 @@ async function main() {
   }
 
   // 3. Создаём admin-пользователя
-  const adminEmail = "admin@dosham.mottlarbe.com";
-  const adminPassword = "Admin123!";
+  const adminEmail = process.env.ADMIN_EMAIL ?? "admin@dosham.mottlarbe.com";
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminPassword) {
+    throw new Error("ADMIN_PASSWORD environment variable is required for seeding");
+  }
   const existingAdmin = await prisma.user.findUnique({
     where: { email: adminEmail },
   });
