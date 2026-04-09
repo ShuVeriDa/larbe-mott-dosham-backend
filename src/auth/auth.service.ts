@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -8,6 +9,7 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { hash, verify } from "argon2";
+import { randomBytes } from "crypto";
 import { Response } from "express";
 import { PrismaService } from "src/prisma.service";
 import { UserService } from "src/user/user.service";
@@ -130,6 +132,70 @@ export class AuthService {
   async logout(userId: string) {
     await this.clearRefreshTokenHash(userId);
     this.logger.log(`Logout: ${userId}`);
+  }
+
+  async forgotPassword(email: string) {
+    const user = await this.prisma.user.findFirst({
+      where: { email: { equals: email, mode: "insensitive" } },
+    });
+
+    // Не раскрываем факт существования пользователя
+    if (!user) {
+      return { message: "Если аккаунт с таким email существует, мы отправили ссылку для сброса пароля" };
+    }
+
+    // Инвалидируем старые неиспользованные токены
+    await this.prisma.passwordResetToken.updateMany({
+      where: { userId: user.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const rawToken = randomBytes(32).toString("hex");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 час
+
+    await this.prisma.passwordResetToken.create({
+      data: { userId: user.id, token: rawToken, expiresAt },
+    });
+
+    this.logger.log(`Password reset requested for user ${user.id}`);
+
+    // В production здесь будет отправка email.
+    // Пока возвращаем токен напрямую — для разработки и тестирования frontend.
+    const isDev = this.configService.get("NODE_ENV") !== "production";
+    return {
+      message: "Если аккаунт с таким email существует, мы отправили ссылку для сброса пароля",
+      ...(isDev && { resetToken: rawToken }),
+    };
+  }
+
+  async resetPassword(token: string, newPassword: string) {
+    const record = await this.prisma.passwordResetToken.findUnique({
+      where: { token },
+    });
+
+    if (!record || record.usedAt) {
+      throw new BadRequestException("Токен недействителен или уже использован");
+    }
+
+    if (record.expiresAt < new Date()) {
+      throw new BadRequestException("Срок действия токена истёк");
+    }
+
+    const hashedPassword = await hash(newPassword);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: record.userId },
+        data: { password: hashedPassword, hashedRefreshToken: null },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { token },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    this.logger.log(`Password reset completed for user ${record.userId}`);
+    return { message: "Пароль успешно изменён" };
   }
 
   // -----------------------------------------------------------------------

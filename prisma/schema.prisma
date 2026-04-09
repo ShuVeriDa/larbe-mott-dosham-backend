@@ -49,6 +49,7 @@ model User {
 
   favorites      UserFavorite[]
   searchHistory  SearchHistory[]
+  passwordResetTokens PasswordResetToken[]
   suggestions    Suggestion[]     @relation("SuggestionAuthor")
   reviewedSuggestions Suggestion[] @relation("SuggestionReviewer")
   entryEditLogs  EntryEditLog[]
@@ -58,6 +59,22 @@ model User {
 
   @@index([status])
   @@map("users")
+}
+
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+  @@map("password_reset_token")
 }
 
 model UserSession {

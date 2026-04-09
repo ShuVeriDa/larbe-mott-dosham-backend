@@ -8,10 +8,13 @@ import {
   Res,
   UnauthorizedException,
 } from "@nestjs/common";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
 import { ConfigService } from "@nestjs/config";
 import { Throttle } from "@nestjs/throttler";
 import {
   ApiBearerAuth,
+  ApiBadRequestResponse,
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiNotFoundResponse,
@@ -127,5 +130,26 @@ export class AuthController {
     await this.authService.logout(userId);
     this.authService.removeRefreshTokenFromResponse(res);
     return true;
+  }
+
+  @Throttle({ default: { limit: 3, ttl: 60000 } })
+  @HttpCode(200)
+  @Post("forgot-password")
+  @ApiOperation({ summary: "Request password reset link" })
+  @ApiOkResponse({
+    description: "Reset token sent (token exposed only in non-production)",
+  })
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.authService.forgotPassword(dto.email);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @HttpCode(200)
+  @Post("reset-password")
+  @ApiOperation({ summary: "Apply password reset token and set new password" })
+  @ApiOkResponse({ description: "Password changed successfully" })
+  @ApiBadRequestResponse({ description: "Invalid or expired token" })
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.token, dto.newPassword);
   }
 }
