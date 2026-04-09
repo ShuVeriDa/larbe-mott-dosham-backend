@@ -14,22 +14,31 @@ import { UpdateEntryDto, BulkUpdateItemDto } from "./dto/update-entry.dto";
 const CACHE_TTL = 300; // 5 минут
 const CACHE_PREFIX = "dict";
 
-const SOURCE_MAP: Record<string, string> = {
-  "maciev": "Мациев А.Г. Чеченско-русский словарь (1961)",
-  "baisultanov-nah-ru": "Байсултанов Д. Чеченско-русский словарь",
-  "baisultanov-ru-nah": "Байсултанов Д. Русско-чеченский словарь",
-  "ismailov-nah-ru": "Исмаилов Ш. Чеченско-русский словарь",
-  "karasaev-ru-nah": "Карасаев А.Т. Русско-чеченский словарь",
-  "karasaev-nah-ru": "Карасаев А.Т. Чеченско-русский словарь",
-  "vagapov": "Вагапов А.Д. Этимологический словарь",
-  "aliev": "Алиев Х.О. Чеченско-русский словарь",
-  "malsagov": "Мальсагов З.К. Грамматика чеченского языка",
-  "taimiev": "Таймиев А. Чеченско-русский словарь",
-  "sulejmanov": "Сулейманов А. Чеченско-русский словарь",
-  "natsieva": "Нацаева С. Чеченско-русский фразеологический словарь",
-  "collected": "Ручной сборник (авторский)",
-  "neologisms": "Неологизмы чеченского языка",
+type SourceDirection = "nah→ru" | "ru→nah" | "оба";
+
+interface SourceMeta {
+  name: string;
+  direction: SourceDirection;
+}
+
+const SOURCE_MAP: Record<string, SourceMeta> = {
+  "maciev":                   { name: "Мациев А.Г. Чеченско-русский словарь (1961)",       direction: "nah→ru" },
+  "baisultanov-nah-ru":       { name: "Байсултанов Д. Чеченско-русский словарь",            direction: "nah→ru" },
+  "baisultanov-ru-nah":       { name: "Байсултанов Д. Русско-чеченский словарь",            direction: "ru→nah" },
+  "ismailov-nah-ru":          { name: "Исмаилов Ш. Чеченско-русский словарь",              direction: "nah→ru" },
+  "karasaev-ru-nah":          { name: "Карасаев А.Т. Русско-чеченский словарь",            direction: "ru→nah" },
+  "karasaev-nah-ru":          { name: "Карасаев А.Т. Чеченско-русский словарь",            direction: "nah→ru" },
+  "vagapov":                  { name: "Вагапов А.Д. Этимологический словарь",              direction: "nah→ru" },
+  "aliev":                    { name: "Алиев Х.О. Чеченско-русский словарь",               direction: "nah→ru" },
+  "malsagov":                 { name: "Мальсагов З.К. Грамматика чеченского языка",        direction: "nah→ru" },
+  "taimiev":                  { name: "Таймиев А. Чеченско-русский словарь",               direction: "nah→ru" },
+  "sulejmanov":               { name: "Сулейманов А. Чеченско-русский словарь",            direction: "nah→ru" },
+  "natsieva":                 { name: "Нацаева С. Чеченско-русский фразеологический словарь", direction: "nah→ru" },
+  "collected":                { name: "Ручной сборник (авторский)",                        direction: "оба"    },
+  "neologisms":               { name: "Неологизмы чеченского языка",                       direction: "оба"    },
 };
+
+const CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"];
 
 @Injectable()
 export class DictionaryService {
@@ -164,8 +173,27 @@ export class DictionaryService {
     return results;
   }
 
-  sources() {
-    return Object.entries(SOURCE_MAP).map(([slug, name]) => ({ slug, name }));
+  async sources() {
+    const cacheKey = `${CACHE_PREFIX}:sources`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) return cached;
+
+    const counts = await this.prisma.$queryRaw<{ src: string; count: bigint }[]>`
+      SELECT src, COUNT(*) AS count
+      FROM "UnifiedEntry", unnest(sources) AS src
+      GROUP BY src
+    `;
+    const countMap = Object.fromEntries(counts.map((c) => [c.src, Number(c.count)]));
+
+    const result = Object.entries(SOURCE_MAP).map(([slug, meta]) => ({
+      slug,
+      name: meta.name,
+      direction: meta.direction,
+      count: countMap[slug] ?? 0,
+    }));
+
+    await this.setCache(cacheKey, result);
+    return result;
   }
 
   async posValues() {
@@ -205,43 +233,71 @@ export class DictionaryService {
   }
 
   async stats() {
-    const total = await this.prisma.unifiedEntry.count();
-    const domains = await this.prisma.$queryRaw<
-      { domain: string | null; count: bigint }[]
-    >`
-      SELECT domain, COUNT(*) as count
-      FROM "UnifiedEntry"
-      GROUP BY domain
-      ORDER BY count DESC
-    `;
-    const cefrLevels = await this.prisma.$queryRaw<
-      { cefrLevel: string | null; count: bigint }[]
-    >`
-      SELECT "cefrLevel", COUNT(*) as count
-      FROM "UnifiedEntry"
-      GROUP BY "cefrLevel"
-      ORDER BY "cefrLevel" ASC
-    `;
+    const cacheKey = `${CACHE_PREFIX}:stats`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) return cached;
 
-    // Считаем уникальные источники из массива sources
-    const sourcesResult = await this.prisma.$queryRaw<[{ count: bigint }]>`
-      SELECT COUNT(DISTINCT src) as count
-      FROM "UnifiedEntry", unnest(sources) AS src
-    `;
+    const [total, domains, cefrLevels, sourcesResult, posDistribution] =
+      await Promise.all([
+        this.prisma.unifiedEntry.count(),
+        this.prisma.$queryRaw<{ domain: string | null; count: bigint }[]>`
+          SELECT domain, COUNT(*) AS count
+          FROM "UnifiedEntry"
+          GROUP BY domain
+          ORDER BY count DESC
+        `,
+        this.prisma.$queryRaw<{ cefrLevel: string | null; count: bigint }[]>`
+          SELECT "cefrLevel", COUNT(*) AS count
+          FROM "UnifiedEntry"
+          GROUP BY "cefrLevel"
+        `,
+        this.prisma.$queryRaw<[{ count: bigint }]>`
+          SELECT COUNT(DISTINCT src) AS count
+          FROM "UnifiedEntry", unnest(sources) AS src
+        `,
+        this.prisma.$queryRaw<{ pos: string; count: bigint }[]>`
+          SELECT "partOfSpeech" AS pos, COUNT(*) AS count
+          FROM "UnifiedEntry"
+          WHERE "partOfSpeech" IS NOT NULL
+          GROUP BY "partOfSpeech"
+          ORDER BY count DESC
+        `,
+      ]);
+
     const totalSources = Number(sourcesResult[0].count);
 
-    return {
+    const cefrKnown = cefrLevels
+      .filter((c) => c.cefrLevel !== null && c.cefrLevel !== "unknown")
+      .map((c) => ({ level: c.cefrLevel as string, count: Number(c.count) }))
+      .sort(
+        (a, b) => CEFR_ORDER.indexOf(a.level) - CEFR_ORDER.indexOf(b.level),
+      );
+    const cefrUnclassified = cefrLevels
+      .filter((c) => c.cefrLevel === null || c.cefrLevel === "unknown")
+      .reduce((sum, c) => sum + Number(c.count), 0);
+
+    const result = {
       total,
       totalSources,
       domains: domains.map((d) => ({
         domain: d.domain ?? "general",
         count: Number(d.count),
+        percentage: Math.round((Number(d.count) / total) * 1000) / 10,
       })),
-      cefrLevels: cefrLevels.map((c) => ({
-        level: c.cefrLevel ?? "unknown",
-        count: Number(c.count),
+      cefrLevels: cefrKnown.map((c) => ({
+        level: c.level,
+        count: c.count,
+        percentage: Math.round((c.count / total) * 1000) / 10,
+      })),
+      cefrUnclassified,
+      posDistribution: posDistribution.map((p) => ({
+        pos: p.pos,
+        count: Number(p.count),
       })),
     };
+
+    await this.setCache(cacheKey, result);
+    return result;
   }
 
   async wordOfDay() {
