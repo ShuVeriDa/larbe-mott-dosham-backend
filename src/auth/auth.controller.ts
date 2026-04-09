@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   Post,
   Req,
@@ -19,6 +20,7 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
+import { UserService } from "src/user/user.service";
 import * as express from "express";
 import { User } from "src/user/decorators/user.decorator";
 import { LoginDto } from "src/user/dto/login.dto";
@@ -32,6 +34,7 @@ export class AuthController {
   constructor(
     private readonly authService: AuthService,
     private readonly configService: ConfigService,
+    private readonly userService: UserService,
   ) {}
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
@@ -99,6 +102,16 @@ export class AuthController {
     );
     this.authService.addRefreshTokenResponse(res, refreshToken);
     return response;
+  }
+
+  @Auth()
+  @Get("me")
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get current authenticated user profile" })
+  @ApiOkResponse({ description: "Current user data" })
+  @ApiUnauthorizedResponse({ description: "Not authenticated" })
+  me(@User("id") userId: string) {
+    return this.userService.getUserById(userId);
   }
 
   @Auth()

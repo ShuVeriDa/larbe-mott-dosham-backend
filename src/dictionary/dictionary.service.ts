@@ -14,6 +14,23 @@ import { UpdateEntryDto, BulkUpdateItemDto } from "./dto/update-entry.dto";
 const CACHE_TTL = 300; // 5 минут
 const CACHE_PREFIX = "dict";
 
+const SOURCE_MAP: Record<string, string> = {
+  "maciev": "Мациев А.Г. Чеченско-русский словарь (1961)",
+  "baisultanov-nah-ru": "Байсултанов Д. Чеченско-русский словарь",
+  "baisultanov-ru-nah": "Байсултанов Д. Русско-чеченский словарь",
+  "ismailov-nah-ru": "Исмаилов Ш. Чеченско-русский словарь",
+  "karasaev-ru-nah": "Карасаев А.Т. Русско-чеченский словарь",
+  "karasaev-nah-ru": "Карасаев А.Т. Чеченско-русский словарь",
+  "vagapov": "Вагапов А.Д. Этимологический словарь",
+  "aliev": "Алиев Х.О. Чеченско-русский словарь",
+  "malsagov": "Мальсагов З.К. Грамматика чеченского языка",
+  "taimiev": "Таймиев А. Чеченско-русский словарь",
+  "sulejmanov": "Сулейманов А. Чеченско-русский словарь",
+  "natsieva": "Нацаева С. Чеченско-русский фразеологический словарь",
+  "collected": "Ручной сборник (авторский)",
+  "neologisms": "Неологизмы чеченского языка",
+};
+
 @Injectable()
 export class DictionaryService {
   private readonly logger = new Logger(DictionaryService.name);
@@ -25,11 +42,14 @@ export class DictionaryService {
   ) {}
 
   async search(dto: SearchEntryDto) {
-    const cacheKey = `${CACHE_PREFIX}:search:${JSON.stringify(dto)}`;
+    const stableKey = JSON.stringify(
+      Object.fromEntries(Object.entries(dto).sort(([a], [b]) => a.localeCompare(b))),
+    );
+    const cacheKey = `${CACHE_PREFIX}:search:${stableKey}`;
     const cached = await this.getCache(cacheKey);
     if (cached) return cached;
 
-    const { q, cefr, pos, nounClass, entryType, limit = 20, offset = 0 } = dto;
+    const { q, cefr, pos, nounClass, entryType, sort = "relevance", limit = 20, offset = 0 } = dto;
 
     const raw = q.trim();
     const normalized = normalizeWord(raw);
@@ -70,6 +90,13 @@ export class DictionaryService {
       (acc, f) => Prisma.sql`${acc} AND ${f}`,
     );
 
+    const orderByClause =
+      sort === "asc"
+        ? Prisma.sql`e.word ASC`
+        : sort === "desc"
+          ? Prisma.sql`e.word DESC`
+          : Prisma.sql`score DESC, length(e.word) ASC`;
+
     const results = await this.prisma.$queryRaw<
       (UnifiedSearchResult & { total_count: bigint })[]
     >`
@@ -80,6 +107,8 @@ export class DictionaryService {
         e."partOfSpeech",
         e."partOfSpeechNah",
         e."nounClass",
+        e."entryType",
+        e.variants,
         e.grammar,
         e.meanings,
         e.phraseology,
@@ -90,7 +119,7 @@ export class DictionaryService {
         COUNT(*) OVER() AS total_count
       FROM "UnifiedEntry" e
       WHERE ${searchCondition}
-      ORDER BY score DESC, length(e.word) ASC
+      ORDER BY ${orderByClause}
       LIMIT ${limit}
       OFFSET ${offset}
     `;
@@ -133,6 +162,46 @@ export class DictionaryService {
     });
     await this.setCache(cacheKey, results);
     return results;
+  }
+
+  sources() {
+    return Object.entries(SOURCE_MAP).map(([slug, name]) => ({ slug, name }));
+  }
+
+  async posValues() {
+    const cacheKey = `${CACHE_PREFIX}:pos-values`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) return cached;
+
+    const rows = await this.prisma.$queryRaw<{ pos: string }[]>`
+      SELECT DISTINCT "partOfSpeech" AS pos
+      FROM "UnifiedEntry"
+      WHERE "partOfSpeech" IS NOT NULL
+      ORDER BY pos ASC
+    `;
+    const result = rows.map((r) => r.pos);
+    await this.setCache(cacheKey, result);
+    return result;
+  }
+
+  async popularQueries() {
+    // Топ-10 запросов за последние 7 дней из таблицы SearchHistory
+    const cacheKey = `${CACHE_PREFIX}:popular-queries`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) return cached;
+
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const rows = await this.prisma.$queryRaw<{ query: string; count: bigint }[]>`
+      SELECT query, COUNT(*) AS count
+      FROM "SearchHistory"
+      WHERE "createdAt" >= ${since}
+      GROUP BY query
+      ORDER BY count DESC
+      LIMIT 10
+    `;
+    const result = rows.map((r) => ({ query: r.query, count: Number(r.count) }));
+    await this.setCache(cacheKey, result);
+    return result;
   }
 
   async stats() {
@@ -222,40 +291,65 @@ export class DictionaryService {
   }
 
   async phraseologySearch(q?: string, limit = 20, offset = 0) {
+    const cacheKey = `${CACHE_PREFIX}:phraseology:${q ?? ""}:${limit}:${offset}`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) return cached;
+
     if (q && q.trim().length > 0) {
-      const pattern = `%${q.toLowerCase()}%`;
-      const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
-        SELECT e.* FROM "UnifiedEntry" e
-        WHERE e."phraseology"::text ILIKE ${pattern}
+      const normalized = normalizeWord(q.trim());
+      const pattern = '%' + q + '%';
+      const results = await this.prisma.$queryRaw<
+        (UnifiedSearchResult & { total_count: bigint })[]
+      >`
+        SELECT e.*,
+          (
+            SELECT MAX(similarity(ph->>'nah', ${normalized}))
+            FROM jsonb_array_elements(e."phraseology") AS ph
+          ) AS score,
+          COUNT(*) OVER() AS total_count
+        FROM "UnifiedEntry" e
+        WHERE EXISTS (
+          SELECT 1 FROM jsonb_array_elements(e."phraseology") AS ph
+          WHERE ph->>'nah' ILIKE ${pattern}
+             OR ph->>'ru'  ILIKE ${pattern}
+        )
+        ORDER BY score DESC, e.word ASC
         LIMIT ${limit}
         OFFSET ${offset}
       `;
-      const countResult = await this.prisma.$queryRaw<[{ count: bigint }]>`
-        SELECT COUNT(*) AS count FROM "UnifiedEntry" e
-        WHERE e."phraseology"::text ILIKE ${pattern}
-      `;
-      return {
-        data: results,
-        meta: { total: Number(countResult[0].count), limit, offset, q },
+      const total = results.length > 0 ? Number(results[0].total_count) : 0;
+      const response = {
+        data: results.map(({ total_count, ...e }) => ({
+          ...e,
+          phraseology: Array.isArray(e.phraseology) ? e.phraseology : [],
+        })),
+        meta: { total, limit, offset, q },
       };
+      await this.setCache(cacheKey, response);
+      return response;
     }
 
     // Browse-режим: записи у которых есть хотя бы одна фразеология
     const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
       SELECT e.* FROM "UnifiedEntry" e
-      WHERE jsonb_array_length(e."phraseology"::jsonb) > 0
-      ORDER BY RANDOM()
+      WHERE jsonb_array_length(e."phraseology") > 0
+      ORDER BY e.id ASC
       LIMIT ${limit}
       OFFSET ${offset}
     `;
     const countResult = await this.prisma.$queryRaw<[{ count: bigint }]>`
       SELECT COUNT(*) AS count FROM "UnifiedEntry" e
-      WHERE jsonb_array_length(e."phraseology"::jsonb) > 0
+      WHERE jsonb_array_length(e."phraseology") > 0
     `;
-    return {
-      data: results,
+    const response = {
+      data: results.map((e) => ({
+        ...e,
+        phraseology: Array.isArray(e.phraseology) ? e.phraseology : [],
+      })),
       meta: { total: Number(countResult[0].count), limit, offset, q: null },
     };
+    await this.setCache(cacheKey, response);
+    return response;
   }
 
   // -----------------------------------------------------------------------
@@ -404,6 +498,8 @@ export interface UnifiedSearchResult {
   partOfSpeech: string | null;
   partOfSpeechNah: string | null;
   nounClass: string | null;
+  entryType: string | null;
+  variants: string[];
   grammar: unknown;
   meanings: unknown;
   phraseology: unknown;

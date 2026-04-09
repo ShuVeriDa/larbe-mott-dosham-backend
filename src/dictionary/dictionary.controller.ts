@@ -87,6 +87,28 @@ export class DictionaryController {
     return this.dictionaryService.wordOfDay();
   }
 
+  @Get("popular")
+  @ApiOperation({
+    summary: "Top-10 search queries over the last 7 days",
+  })
+  popular() {
+    return this.dictionaryService.popularQueries();
+  }
+
+  @Get("meta/pos-values")
+  @ApiOperation({
+    summary: "List of distinct partOfSpeech values present in the dictionary",
+  })
+  posValues() {
+    return this.dictionaryService.posValues();
+  }
+
+  @Get("sources")
+  @ApiOperation({ summary: "List all known dictionary sources (slug → name mapping)" })
+  sources() {
+    return this.dictionaryService.sources();
+  }
+
   @Get("phraseology")
   @ApiOperation({
     summary:

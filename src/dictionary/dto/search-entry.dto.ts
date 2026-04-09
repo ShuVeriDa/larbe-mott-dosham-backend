@@ -10,6 +10,7 @@ import {
 } from "class-validator";
 
 const CEFR_VALUES = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
+const SORT_VALUES = ["relevance", "asc", "desc"] as const;
 
 export class SearchEntryDto {
   @IsString()
@@ -41,6 +42,10 @@ export class SearchEntryDto {
   @IsOptional()
   @IsIn(["standard", "neologism"])
   entryType?: string;
+
+  @IsOptional()
+  @IsIn(SORT_VALUES)
+  sort?: "relevance" | "asc" | "desc" = "relevance";
 
   @IsOptional()
   @Type(() => Number)
