@@ -64,6 +64,10 @@ test-lookup-result.txt
 test-lookup-result2.txt
 missing-ids.md
 
+design
+docs/*
+prompt.md
+
 ARCHITECTURE.MD
 CLAUDE.MD
 PROJECT.MD

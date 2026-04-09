@@ -74,15 +74,26 @@ export class DictionaryController {
   }
 
   @Get("random")
-  @ApiOperation({ summary: "Get a random word (word of the day)" })
+  @ApiOperation({ summary: "Get a random word" })
   random(@Query("cefr") cefr?: string) {
     return this.dictionaryService.random(cefr);
   }
 
+  @Get("word-of-day")
+  @ApiOperation({
+    summary: "Get word of the day (deterministic per date, cached until midnight)",
+  })
+  wordOfDay() {
+    return this.dictionaryService.wordOfDay();
+  }
+
   @Get("phraseology")
-  @ApiOperation({ summary: "Search by phraseology (idioms, expressions)" })
+  @ApiOperation({
+    summary:
+      "Search by phraseology (idioms, expressions). Without q — browse mode (random entries with phraseology).",
+  })
   phraseology(
-    @Query("q") q: string,
+    @Query("q") q?: string,
     @Query("limit", new DefaultValuePipe(20), ParseIntPipe) limit?: number,
     @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset?: number,
   ) {

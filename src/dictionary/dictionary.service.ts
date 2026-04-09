@@ -60,7 +60,8 @@ export class DictionaryService {
 
     // Дополнительные фильтры
     const filters = [langCondition];
-    if (cefr) filters.push(Prisma.sql`e."cefrLevel" = ${cefr}`);
+    if (cefr && cefr.length > 0)
+      filters.push(Prisma.sql`e."cefrLevel" = ANY(${cefr}::text[])`);
     if (pos) filters.push(Prisma.sql`e."partOfSpeech" = ${pos}`);
     if (nounClass) filters.push(Prisma.sql`e."nounClass" = ${nounClass}`);
     if (entryType) filters.push(Prisma.sql`e."entryType" = ${entryType}`);
@@ -153,8 +154,16 @@ export class DictionaryService {
       ORDER BY "cefrLevel" ASC
     `;
 
+    // Считаем уникальные источники из массива sources
+    const sourcesResult = await this.prisma.$queryRaw<[{ count: bigint }]>`
+      SELECT COUNT(DISTINCT src) as count
+      FROM "UnifiedEntry", unnest(sources) AS src
+    `;
+    const totalSources = Number(sourcesResult[0].count);
+
     return {
       total,
+      totalSources,
       domains: domains.map((d) => ({
         domain: d.domain ?? "general",
         count: Number(d.count),
@@ -166,6 +175,43 @@ export class DictionaryService {
     };
   }
 
+  async wordOfDay() {
+    const cacheKey = `${CACHE_PREFIX}:wotd:${new Date().toISOString().slice(0, 10)}`;
+    const cached = await this.getCache(cacheKey);
+    if (cached) return cached;
+
+    const total = await this.prisma.unifiedEntry.count();
+    if (total === 0) return null;
+
+    // Детерминированный индекс по дате: меняется раз в сутки
+    const today = new Date().toISOString().slice(0, 10); // "2026-04-09"
+    const seed = today
+      .split("")
+      .reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const skip = seed % total;
+
+    const entry = await this.prisma.unifiedEntry.findFirst({ skip });
+    // TTL до конца суток (UTC)
+    const now = new Date();
+    const midnight = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1),
+    );
+    const ttl = Math.floor((midnight.getTime() - now.getTime()) / 1000);
+
+    try {
+      await this.redis.set(
+        cacheKey,
+        JSON.stringify(entry),
+        "EX",
+        Math.max(ttl, 60),
+      );
+    } catch {
+      // cache failure is not critical
+    }
+
+    return entry;
+  }
+
   async random(cefr?: string) {
     const where = cefr ? { cefrLevel: cefr } : {};
     const count = await this.prisma.unifiedEntry.count({ where });
@@ -175,21 +221,40 @@ export class DictionaryService {
     return this.prisma.unifiedEntry.findFirst({ where, skip });
   }
 
-  async phraseologySearch(q: string, limit = 20, offset = 0) {
-    const pattern = `%${q.toLowerCase()}%`;
+  async phraseologySearch(q?: string, limit = 20, offset = 0) {
+    if (q && q.trim().length > 0) {
+      const pattern = `%${q.toLowerCase()}%`;
+      const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
+        SELECT e.* FROM "UnifiedEntry" e
+        WHERE e."phraseology"::text ILIKE ${pattern}
+        LIMIT ${limit}
+        OFFSET ${offset}
+      `;
+      const countResult = await this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) AS count FROM "UnifiedEntry" e
+        WHERE e."phraseology"::text ILIKE ${pattern}
+      `;
+      return {
+        data: results,
+        meta: { total: Number(countResult[0].count), limit, offset, q },
+      };
+    }
+
+    // Browse-режим: записи у которых есть хотя бы одна фразеология
     const results = await this.prisma.$queryRaw<UnifiedSearchResult[]>`
       SELECT e.* FROM "UnifiedEntry" e
-      WHERE e."phraseology"::text ILIKE ${pattern}
+      WHERE jsonb_array_length(e."phraseology"::jsonb) > 0
+      ORDER BY RANDOM()
       LIMIT ${limit}
       OFFSET ${offset}
     `;
     const countResult = await this.prisma.$queryRaw<[{ count: bigint }]>`
       SELECT COUNT(*) AS count FROM "UnifiedEntry" e
-      WHERE e."phraseology"::text ILIKE ${pattern}
+      WHERE jsonb_array_length(e."phraseology"::jsonb) > 0
     `;
     return {
       data: results,
-      meta: { total: Number(countResult[0].count), limit, offset, q },
+      meta: { total: Number(countResult[0].count), limit, offset, q: null },
     };
   }
 
