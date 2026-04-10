@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
 import { Prisma, RoleName } from "@prisma/client";
 import * as crypto from "crypto";
+import { normalizeWord } from "src/common/utils/normalize_util";
 import { PrismaService } from "src/prisma.service";
 import { MergeService } from "src/merge/merge.service";
 
@@ -114,6 +115,10 @@ export class AdminService {
     return this.mergeService.improve();
   }
 
+  async runImproveEntries(ids: number[]) {
+    return this.mergeService.improveEntries(ids);
+  }
+
   async runRollback(step: number) {
     return this.mergeService.rollback(step);
   }
@@ -157,6 +162,199 @@ export class AdminService {
   }
 
   // -----------------------------------------------------------------------
+  // Entries: stats / bulk delete / export
+  // -----------------------------------------------------------------------
+
+  async entriesStats() {
+    type StatsRow = {
+      total: bigint;
+      noun: bigint;
+      verb: bigint;
+      adj: bigint;
+      adv: bigint;
+      other: bigint;
+      updated_today: bigint;
+    };
+
+    const [row] = await this.prisma.$queryRaw<StatsRow[]>`
+      SELECT
+        COUNT(*)                                                                           AS total,
+        COUNT(*) FILTER (WHERE "partOfSpeech" ILIKE '%сущ%' OR "partOfSpeech" = 'noun')  AS noun,
+        COUNT(*) FILTER (WHERE "partOfSpeech" ILIKE '%гл%'  OR "partOfSpeech" = 'verb')  AS verb,
+        COUNT(*) FILTER (WHERE "partOfSpeech" ILIKE '%прил%' OR "partOfSpeech" = 'adj')  AS adj,
+        COUNT(*) FILTER (WHERE "partOfSpeech" ILIKE '%нар%' OR "partOfSpeech" = 'adv')   AS adv,
+        COUNT(*) FILTER (WHERE NOT (
+          "partOfSpeech" ILIKE '%сущ%' OR "partOfSpeech" = 'noun'
+          OR "partOfSpeech" ILIKE '%гл%'  OR "partOfSpeech" = 'verb'
+          OR "partOfSpeech" ILIKE '%прил%' OR "partOfSpeech" = 'adj'
+          OR "partOfSpeech" ILIKE '%нар%' OR "partOfSpeech" = 'adv'
+        ))                                                                                 AS other,
+        COUNT(*) FILTER (WHERE "updatedAt" >= CURRENT_DATE)                               AS updated_today
+      FROM "UnifiedEntry"
+    `;
+
+    return {
+      total: Number(row.total),
+      byPos: {
+        noun: Number(row.noun),
+        verb: Number(row.verb),
+        adj: Number(row.adj),
+        adv: Number(row.adv),
+        other: Number(row.other),
+      },
+      sourcesCount: 14,
+      updatedToday: Number(row.updated_today),
+    };
+  }
+
+  async bulkDeleteEntries(ids: number[]) {
+    const existing = await this.prisma.unifiedEntry.findMany({
+      where: { id: { in: ids } },
+      select: { id: true },
+    });
+    const existingIds = new Set(existing.map((e) => e.id));
+
+    const toDelete = ids.filter((id) => existingIds.has(id));
+    const notFound = ids.filter((id) => !existingIds.has(id));
+
+    if (toDelete.length > 0) {
+      await this.prisma.unifiedEntry.deleteMany({ where: { id: { in: toDelete } } });
+    }
+
+    const results = [
+      ...toDelete.map((id) => ({ id, success: true })),
+      ...notFound.map((id) => ({ id, success: false, error: `Entry #${id} not found` })),
+    ];
+
+    return {
+      total: ids.length,
+      deleted: toDelete.length,
+      failed: notFound.length,
+      results,
+    };
+  }
+
+  async exportEntries(params: {
+    q?: string;
+    pos?: string;
+    source?: string;
+    cefr?: string[];
+    nounClass?: string;
+  }) {
+    const { q, pos, source, cefr, nounClass } = params;
+
+    const conditions: Prisma.Sql[] = [];
+
+    if (q && q.trim()) {
+      const normalized = normalizeWord(q.trim());
+      conditions.push(
+        Prisma.sql`(e."wordNormalized" ILIKE ${"%" + normalized + "%"} OR e."meanings"::text ILIKE ${"%" + q + "%"})`,
+      );
+    }
+    if (pos) conditions.push(Prisma.sql`e."partOfSpeech" = ${pos}`);
+    if (source) conditions.push(Prisma.sql`${source} = ANY(e.sources::text[])`);
+    if (cefr && cefr.length > 0) conditions.push(Prisma.sql`e."cefrLevel" = ANY(${cefr}::text[])`);
+    if (nounClass) conditions.push(Prisma.sql`e."nounClass" = ${nounClass}`);
+
+    const whereClause =
+      conditions.length > 0 ? conditions.reduce((acc, c) => Prisma.sql`${acc} AND ${c}`) : Prisma.sql`TRUE`;
+
+    type ExportRow = {
+      id: number;
+      word: string;
+      partOfSpeech: string | null;
+      nounClass: string | null;
+      cefrLevel: string | null;
+      entryType: string | null;
+      sources: string[];
+      domain: string | null;
+      meanings: unknown;
+      updatedAt: Date;
+      createdAt: Date;
+    };
+
+    return this.prisma.$queryRaw<ExportRow[]>`
+      SELECT
+        e.id, e.word, e."partOfSpeech", e."nounClass",
+        e."cefrLevel", e."entryType", e.sources, e.domain,
+        e.meanings, e."updatedAt", e."createdAt"
+      FROM "UnifiedEntry" e
+      WHERE ${whereClause}
+      ORDER BY e.id ASC
+    `;
+  }
+
+  async listEntries(params: {
+    pos?: string;
+    nounClass?: string;
+    source?: string;
+    cefr?: string;
+    limit?: number;
+  }) {
+    const { pos, nounClass, source, cefr, limit = 100 } = params;
+
+    const conditions: Prisma.Sql[] = [];
+
+    if (pos) conditions.push(Prisma.sql`"partOfSpeech" = ${pos}`);
+    if (nounClass) conditions.push(Prisma.sql`"nounClass" = ${nounClass}`);
+    if (source) conditions.push(Prisma.sql`${source} = ANY(sources::text[])`);
+    if (cefr) conditions.push(Prisma.sql`"cefrLevel" = ${cefr}`);
+
+    const whereClause =
+      conditions.length > 0
+        ? conditions.reduce((acc, c) => Prisma.sql`${acc} AND ${c}`)
+        : Prisma.sql`TRUE`;
+
+    const safeLimit = Math.min(Math.max(1, limit), 100);
+
+    type ListRow = {
+      id: number;
+      word: string;
+      partOfSpeech: string | null;
+      nounClass: string | null;
+      cefrLevel: string | null;
+      entryType: string | null;
+    };
+
+    const [data, totalResult] = await Promise.all([
+      this.prisma.$queryRaw<ListRow[]>`
+        SELECT id, word, "partOfSpeech", "nounClass", "cefrLevel", "entryType"
+        FROM "UnifiedEntry"
+        WHERE ${whereClause}
+        ORDER BY id ASC
+        LIMIT ${safeLimit}`,
+      this.prisma.$queryRaw<[{ count: bigint }]>`
+        SELECT COUNT(*) AS count FROM "UnifiedEntry" WHERE ${whereClause}`,
+    ]);
+
+    return { data, total: Number(totalResult[0].count) };
+  }
+
+  async batchFetchEntries(ids: number[]) {
+    type BatchRow = {
+      id: number;
+      word: string;
+      partOfSpeech: string | null;
+      nounClass: string | null;
+      cefrLevel: string | null;
+      entryType: string | null;
+      domain: string | null;
+      styleLabel: string | null;
+      latinName: string | null;
+      nounClassPlural: string | null;
+      partOfSpeechNah: string | null;
+    };
+
+    return this.prisma.$queryRaw<BatchRow[]>`
+      SELECT
+        id, word, "partOfSpeech", "nounClass", "cefrLevel", "entryType",
+        domain, "styleLabel", "latinName", "nounClassPlural", "partOfSpeechNah"
+      FROM "UnifiedEntry"
+      WHERE id = ANY(${ids}::int[])
+      ORDER BY id ASC`;
+  }
+
+  // -----------------------------------------------------------------------
   // Data Quality
   // -----------------------------------------------------------------------
 
@@ -194,6 +392,7 @@ export class AdminService {
       total,
       noMeanings: Number(noMeanings[0].count),
       nounsWithoutClass: Number(noClass[0].count),
+      noClass: Number(noClass[0].count),
       noPartOfSpeech: Number(noPos[0].count),
       noExamples: Number(noExamples[0].count),
       neologisms,
@@ -201,6 +400,25 @@ export class AdminService {
       cleanEntries: total - problemsUniqueNum,
       pendingSuggestions,
     };
+  }
+
+  private buildOrderBySql(sortBy?: string, sortDir?: string): Prisma.Sql {
+    const dir = sortDir === "asc" ? Prisma.raw("ASC") : Prisma.raw("DESC");
+    switch (sortBy) {
+      case "word":
+        return Prisma.sql`ORDER BY word ${dir}`;
+      case "source":
+        return Prisma.sql`ORDER BY sources[1] ${dir}`;
+      case "problems":
+        return Prisma.sql`ORDER BY (
+          (jsonb_array_length(meanings::jsonb) = 0)::int +
+          ("partOfSpeech" IS NULL)::int +
+          ("nounClass" IS NULL AND "partOfSpeech" = 'сущ.')::int +
+          (NOT meanings::text LIKE '%examples%')::int
+        ) ${dir}`;
+      default:
+        return Prisma.sql`ORDER BY "updatedAt" ${dir}`;
+    }
   }
 
   private buildProblemsFilter(type?: string, q?: string, source?: string): Prisma.Sql {
@@ -242,14 +460,17 @@ export class AdminService {
       entryType: string;
       sources: string[];
       updatedAt: Date;
+      meanings?: unknown;
       flag_no_meanings: boolean;
       flag_no_pos: boolean;
       flag_no_class: boolean;
       flag_no_examples: boolean;
     }[],
+    includeMeanings = false,
   ) {
-    return rows.map(({ flag_no_meanings, flag_no_pos, flag_no_class, flag_no_examples, ...row }) => ({
+    return rows.map(({ flag_no_meanings, flag_no_pos, flag_no_class, flag_no_examples, meanings, ...row }) => ({
       ...row,
+      ...(includeMeanings ? { meanings } : {}),
       problems: [
         flag_no_meanings && "no-meanings",
         flag_no_pos && "no-pos",
@@ -259,9 +480,21 @@ export class AdminService {
     }));
   }
 
-  async findProblems(type?: string, limit = 50, page = 1, q?: string, source?: string) {
+  async findProblems(
+    type?: string,
+    limit = 50,
+    page = 1,
+    q?: string,
+    source?: string,
+    sortBy?: string,
+    sortDir?: string,
+    include?: string,
+  ) {
     const offset = (page - 1) * limit;
     const filter = this.buildProblemsFilter(type, q, source);
+    const orderBy = this.buildOrderBySql(sortBy, sortDir);
+    const includeMeanings = include === "meanings";
+    const meaningsSql = includeMeanings ? Prisma.sql`, meanings` : Prisma.empty;
 
     type ProblemsRow = {
       id: number;
@@ -271,6 +504,7 @@ export class AdminService {
       entryType: string;
       sources: string[];
       updatedAt: Date;
+      meanings?: unknown;
       flag_no_meanings: boolean;
       flag_no_pos: boolean;
       flag_no_class: boolean;
@@ -279,7 +513,7 @@ export class AdminService {
 
     const selectSql = Prisma.sql`
       SELECT
-        id, word, "partOfSpeech", "nounClass", "entryType", sources, "updatedAt",
+        id, word, "partOfSpeech", "nounClass", "entryType", sources, "updatedAt"${meaningsSql},
         (jsonb_array_length(meanings::jsonb) = 0)                       AS flag_no_meanings,
         ("partOfSpeech" IS NULL)                                         AS flag_no_pos,
         ("nounClass" IS NULL AND "partOfSpeech" = 'сущ.')               AS flag_no_class,
@@ -288,14 +522,14 @@ export class AdminService {
       WHERE ${filter}`;
 
     const [rows, totalResult] = await Promise.all([
-      this.prisma.$queryRaw<ProblemsRow[]>`${selectSql} ORDER BY "updatedAt" DESC LIMIT ${limit} OFFSET ${offset}`,
+      this.prisma.$queryRaw<ProblemsRow[]>`${selectSql} ${orderBy} LIMIT ${limit} OFFSET ${offset}`,
       this.prisma.$queryRaw<[{ count: bigint }]>`SELECT COUNT(*) as count FROM "UnifiedEntry" WHERE ${filter}`,
     ]);
 
     const total = Number(totalResult[0].count);
 
     return {
-      data: this.mapProblemRows(rows),
+      data: this.mapProblemRows(rows, includeMeanings),
       total,
       page,
       limit,
@@ -303,8 +537,9 @@ export class AdminService {
     };
   }
 
-  async findProblemsForExport(type?: string, q?: string, source?: string) {
+  async findProblemsForExport(type?: string, q?: string, source?: string, sortBy?: string, sortDir?: string) {
     const filter = this.buildProblemsFilter(type, q, source);
+    const orderBy = this.buildOrderBySql(sortBy, sortDir);
 
     type ProblemsRow = {
       id: number;
@@ -329,7 +564,7 @@ export class AdminService {
         (NOT meanings::text LIKE '%examples%')                          AS flag_no_examples
       FROM "UnifiedEntry"
       WHERE ${filter}
-      ORDER BY "updatedAt" DESC`;
+      ${orderBy}`;
 
     return this.mapProblemRows(rows);
   }
@@ -394,6 +629,22 @@ export class AdminService {
       },
       orderBy: { createdAt: "desc" },
     });
+  }
+
+  async getAdjacentEntries(id: number): Promise<{ prevId: number | null; nextId: number | null }> {
+    const [prev, next] = await Promise.all([
+      this.prisma.unifiedEntry.findFirst({
+        where: { id: { lt: id } },
+        orderBy: { id: "desc" },
+        select: { id: true },
+      }),
+      this.prisma.unifiedEntry.findFirst({
+        where: { id: { gt: id } },
+        orderBy: { id: "asc" },
+        select: { id: true },
+      }),
+    ]);
+    return { prevId: prev?.id ?? null, nextId: next?.id ?? null };
   }
 
   async getRecentEdits(limit = 50) {

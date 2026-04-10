@@ -135,6 +135,9 @@ export class MergeService {
   improve() {
     return this.runOp("improve", () => this.loadPipeline.improve());
   }
+  improveEntries(ids: number[]) {
+    return this.runOp("improve-entries", () => this.loadPipeline.improveEntries(ids));
+  }
 
   // --- Parsed files list ---
   async parsedFiles() {

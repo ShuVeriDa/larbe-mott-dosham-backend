@@ -7,6 +7,7 @@ import { UsersAdminController } from "./controllers/users-admin.controller";
 import { PipelineAdminController } from "./controllers/pipeline-admin.controller";
 import { QualityAdminController } from "./controllers/quality-admin.controller";
 import { AuditAdminController } from "./controllers/audit-admin.controller";
+import { EntriesAdminController } from "./controllers/entries-admin.controller";
 
 @Module({
   imports: [AuthModule, MergeModule],
@@ -16,6 +17,7 @@ import { AuditAdminController } from "./controllers/audit-admin.controller";
     PipelineAdminController,
     QualityAdminController,
     AuditAdminController,
+    EntriesAdminController,
   ],
   providers: [AdminService],
 })

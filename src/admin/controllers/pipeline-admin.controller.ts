@@ -1,8 +1,9 @@
-import { Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { PermissionCode } from "@prisma/client";
 import { AdminPermission } from "src/auth/decorators/admin-permission.decorator";
 import { AdminService } from "../admin.service";
+import { ImproveEntriesDto } from "../dto/improve-entries.dto";
 
 @ApiTags("admin/pipeline")
 @Controller("admin/pipeline")
@@ -33,6 +34,12 @@ export class PipelineAdminController {
   @ApiOperation({ summary: "Run improve on unified.json" })
   improve() {
     return this.adminService.runImprove();
+  }
+
+  @Post("improve-entries")
+  @ApiOperation({ summary: "Run improve on specific DB entries by IDs (max 500)" })
+  improveEntries(@Body() body: ImproveEntriesDto) {
+    return this.adminService.runImproveEntries(body.ids);
   }
 
   @Post("rollback/:step")

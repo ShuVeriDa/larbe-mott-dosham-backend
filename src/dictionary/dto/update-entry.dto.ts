@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import { Type } from "class-transformer";
 import {
+  ArrayMaxSize,
   IsArray,
   IsIn,
   IsInt,
@@ -152,6 +153,18 @@ export class UpdateEntryDto {
   @IsOptional()
   @IsIn(["standard", "neologism"])
   entryType?: string;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  sources?: string[];
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  homonymIndex?: number;
 }
 
 /** Один элемент bulk-обновления: id записи + поля для изменения */
@@ -170,6 +183,7 @@ export class BulkUpdateItemDto {
 export class BulkUpdateEntriesDto {
   @ApiProperty({ type: [BulkUpdateItemDto], maxItems: 100 })
   @IsArray()
+  @ArrayMaxSize(100)
   @ValidateNested({ each: true })
   @Type(() => BulkUpdateItemDto)
   entries: BulkUpdateItemDto[];

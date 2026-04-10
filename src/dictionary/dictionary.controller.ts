@@ -2,7 +2,10 @@ import {
   Body,
   Controller,
   DefaultValuePipe,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
   ParseIntPipe,
   Patch,
@@ -141,6 +144,16 @@ export class DictionaryController {
   @ApiOperation({ summary: "Get entry by ID" })
   getById(@Param("id", ParseIntPipe) id: number) {
     return this.dictionaryService.getById(id);
+  }
+
+  @Delete(":id")
+  @AdminPermission(PermissionCode.CAN_DELETE_ENTRIES)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Delete a single dictionary entry" })
+  @ApiOkResponse({ description: "Entry deleted" })
+  delete(@Param("id", ParseIntPipe) id: number) {
+    return this.dictionaryService.deleteEntry(id);
   }
 
   @Patch(":id")

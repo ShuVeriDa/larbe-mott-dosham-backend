@@ -8,7 +8,7 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { PermissionCode } from "@prisma/client";
-import { Response } from "express";
+import type { Response } from "express";
 import { AdminPermission } from "src/auth/decorators/admin-permission.decorator";
 import { AdminService } from "../admin.service";
 
@@ -37,9 +37,11 @@ export class QualityAdminController {
     @Query("type") type: string | undefined,
     @Query("q") q: string | undefined,
     @Query("source") source: string | undefined,
+    @Query("sortBy") sortBy: string | undefined,
+    @Query("sortDir") sortDir: string | undefined,
     @Res() res: Response,
   ) {
-    const rows = await this.adminService.findProblemsForExport(type, q, source);
+    const rows = await this.adminService.findProblemsForExport(type, q, source, sortBy, sortDir);
 
     const header = "id,word,partOfSpeech,nounClass,entryType,sources,updatedAt,problems\n";
     const csvRows = rows.map((row) =>
@@ -70,7 +72,10 @@ export class QualityAdminController {
     @Query("page", new DefaultValuePipe(1), ParseIntPipe) page?: number,
     @Query("q") q?: string,
     @Query("source") source?: string,
+    @Query("sortBy") sortBy?: string,
+    @Query("sortDir") sortDir?: string,
+    @Query("include") include?: string,
   ) {
-    return this.adminService.findProblems(type, limit, page, q, source);
+    return this.adminService.findProblems(type, limit, page, q, source, sortBy, sortDir, include);
   }
 }

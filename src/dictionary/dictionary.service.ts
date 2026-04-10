@@ -58,7 +58,7 @@ export class DictionaryService {
     const cached = await this.getCache(cacheKey);
     if (cached) return cached;
 
-    const { q, cefr, pos, nounClass, entryType, sort = "relevance", limit = 20, offset = 0 } = dto;
+    const { q, cefr, pos, nounClass, entryType, source, sort = "relevance", limit = 20, offset = 0 } = dto;
 
     const raw = q.trim();
     const normalized = normalizeWord(raw);
@@ -94,6 +94,7 @@ export class DictionaryService {
     if (pos) filters.push(Prisma.sql`e."partOfSpeech" = ${pos}`);
     if (nounClass) filters.push(Prisma.sql`e."nounClass" = ${nounClass}`);
     if (entryType) filters.push(Prisma.sql`e."entryType" = ${entryType}`);
+    if (source) filters.push(Prisma.sql`${source} = ANY(e.sources::text[])`);
 
     const searchCondition = filters.reduce(
       (acc, f) => Prisma.sql`${acc} AND ${f}`,
@@ -104,7 +105,15 @@ export class DictionaryService {
         ? Prisma.sql`e.word ASC`
         : sort === "desc"
           ? Prisma.sql`e.word DESC`
-          : Prisma.sql`score DESC, length(e.word) ASC`;
+          : sort === "updatedAt_desc"
+            ? Prisma.sql`e."updatedAt" DESC`
+            : sort === "updatedAt_asc"
+              ? Prisma.sql`e."updatedAt" ASC`
+              : sort === "createdAt_desc"
+                ? Prisma.sql`e."createdAt" DESC`
+                : sort === "meaningsCount_desc"
+                  ? Prisma.sql`jsonb_array_length(e.meanings::jsonb) DESC, e.word ASC`
+                  : Prisma.sql`score DESC, length(e.word) ASC`;
 
     const results = await this.prisma.$queryRaw<
       (UnifiedSearchResult & { total_count: bigint })[]
@@ -124,6 +133,8 @@ export class DictionaryService {
         e.domain,
         e."cefrLevel",
         e.sources,
+        e."updatedAt",
+        e."createdAt",
         similarity(e."wordNormalized", ${normalized}) AS score,
         COUNT(*) OVER() AS total_count
       FROM "UnifiedEntry" e
@@ -418,6 +429,13 @@ export class DictionaryService {
     return entry;
   }
 
+  async deleteEntry(id: number) {
+    await this.getById(id);
+    await this.prisma.unifiedEntry.delete({ where: { id } });
+    await this.invalidateCache();
+    return { deleted: true, id };
+  }
+
   async updateEntry(id: number, dto: UpdateEntryDto) {
     await this.getById(id);
     const data = this.buildUpdateData(dto);
@@ -430,6 +448,7 @@ export class DictionaryService {
   }
 
   async bulkUpdate(items: BulkUpdateItemDto[]) {
+    const startTime = Date.now();
     const results: { id: number; success: boolean; error?: string }[] = [];
 
     await this.prisma.$transaction(async (tx) => {
@@ -463,6 +482,7 @@ export class DictionaryService {
       updated: results.filter((r) => r.success).length,
       failed: results.filter((r) => !r.success).length,
       results,
+      durationMs: Date.now() - startTime,
     };
   }
 
@@ -493,6 +513,8 @@ export class DictionaryService {
     if (dto.domain !== undefined) data.domain = dto.domain;
     if (dto.cefrLevel !== undefined) data.cefrLevel = dto.cefrLevel;
     if (dto.entryType !== undefined) data.entryType = dto.entryType;
+    if (dto.sources !== undefined) data.sources = dto.sources;
+    if (dto.homonymIndex !== undefined) data.homonymIndex = dto.homonymIndex;
 
     return data;
   }
@@ -562,5 +584,7 @@ export interface UnifiedSearchResult {
   domain: string | null;
   cefrLevel: string | null;
   sources: string[];
+  updatedAt?: Date;
+  createdAt?: Date;
   score?: number;
 }

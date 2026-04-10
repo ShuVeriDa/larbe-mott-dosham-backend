@@ -10,7 +10,15 @@ import {
 } from "class-validator";
 
 const CEFR_VALUES = ["A1", "A2", "B1", "B2", "C1", "C2"] as const;
-const SORT_VALUES = ["relevance", "asc", "desc"] as const;
+const SORT_VALUES = [
+  "relevance",
+  "asc",
+  "desc",
+  "updatedAt_desc",
+  "updatedAt_asc",
+  "createdAt_desc",
+  "meaningsCount_desc",
+] as const;
 
 export class SearchEntryDto {
   @IsString()
@@ -44,8 +52,19 @@ export class SearchEntryDto {
   entryType?: string;
 
   @IsOptional()
+  @IsString()
+  source?: string; // фильтр по источнику: "maciev", "vagapov" и т.д.
+
+  @IsOptional()
   @IsIn(SORT_VALUES)
-  sort?: "relevance" | "asc" | "desc" = "relevance";
+  sort?:
+    | "relevance"
+    | "asc"
+    | "desc"
+    | "updatedAt_desc"
+    | "updatedAt_asc"
+    | "createdAt_desc"
+    | "meaningsCount_desc" = "relevance";
 
   @IsOptional()
   @Type(() => Number)

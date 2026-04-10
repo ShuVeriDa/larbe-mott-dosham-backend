@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
+import { Prisma } from "@prisma/client";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import { normalizeWord } from "src/common/utils/normalize_util";
@@ -344,5 +345,155 @@ export class LoadPipelineService {
       removedEmpty: report.removedEmptyMeanings,
       affectedEntries: affectedEntries.slice(0, 200),
     };
+  }
+
+  async improveEntries(ids: number[]) {
+    if (ids.length === 0) return { processed: 0, updated: 0 };
+    if (ids.length > 500) {
+      throw new BadRequestException("Максимум 500 записей за один запрос");
+    }
+
+    const entries = await this.prisma.unifiedEntry.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, word: true, meanings: true, phraseology: true, citations: true, styleLabel: true },
+    });
+
+    const report = {
+      processed: entries.length,
+      updated: 0,
+      removedEmptyMeanings: 0,
+      removedBrokenExamples: 0,
+      normalizedStyleLabels: 0,
+      normalizedWords: 0,
+      truncatedFields: 0,
+      deduplicatedMeanings: 0,
+      cleanedPhraseology: 0,
+      cleanedCitations: 0,
+    };
+
+    const MAX_TRANSLATION_LEN = 2000;
+    const MAX_CITATION_LEN = 500;
+
+    for (const entry of entries) {
+      const updateData: Prisma.UnifiedEntryUpdateInput = {};
+      let changed = false;
+
+      // 1. Нормализация слова
+      const normalizedWord = entry.word.normalize("NFC").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+      if (normalizedWord !== entry.word) {
+        updateData.word = normalizedWord;
+        updateData.wordNormalized = normalizeWord(normalizedWord);
+        report.normalizedWords++;
+        changed = true;
+      }
+
+      // 2–5. Обработка meanings
+      if (Array.isArray(entry.meanings)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        let meanings = entry.meanings as any[];
+
+        // 2. Удаление meanings без текста
+        const beforeLen = meanings.length;
+        meanings = meanings.filter((m) => m.translation?.trim() || m.note?.trim());
+        report.removedEmptyMeanings += beforeLen - meanings.length;
+        if (beforeLen !== meanings.length) changed = true;
+
+        // 3. Дедупликация
+        const seen = new Set<string>();
+        const beforeDedup = meanings.length;
+        meanings = meanings.filter((m) => {
+          const key = m.translation?.trim() ?? "";
+          if (!key) return true;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        report.deduplicatedMeanings += beforeDedup - meanings.length;
+        if (beforeDedup !== meanings.length) changed = true;
+
+        // 4. Исправление битых примеров
+        for (const m of meanings) {
+          if (!m.examples) continue;
+          const exBefore = m.examples.length;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          m.examples = m.examples.filter((ex: any) => {
+            if (!ex.ru?.trim() || !ex.nah?.trim()) return false;
+            if (ex.nah.trim().toLowerCase() === ex.ru.trim().toLowerCase()) return false;
+            return true;
+          });
+          const removedEx = exBefore - m.examples.length;
+          if (removedEx > 0) {
+            report.removedBrokenExamples += removedEx;
+            changed = true;
+            if (m.examples.length === 0) delete m.examples;
+          }
+
+          // 5. Обрезка длинных translation
+          if (m.translation && m.translation.length > MAX_TRANSLATION_LEN) {
+            m.translation = m.translation.slice(0, MAX_TRANSLATION_LEN);
+            report.truncatedFields++;
+            changed = true;
+          }
+        }
+
+        if (changed) updateData.meanings = meanings as unknown as Prisma.InputJsonValue;
+      }
+
+      // 6. Нормализация стилевых помет
+      if (entry.styleLabel) {
+        const normalized = normalizeStyleLabel(entry.styleLabel);
+        if (normalized !== entry.styleLabel) {
+          updateData.styleLabel = normalized;
+          report.normalizedStyleLabels++;
+          changed = true;
+        }
+      }
+
+      // 7. Очистка фразеологии
+      if (Array.isArray(entry.phraseology)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const ph = entry.phraseology as any[];
+        const before = ph.length;
+        const cleaned = ph.filter((p) => p.nah?.trim() && p.ru?.trim());
+        report.cleanedPhraseology += before - cleaned.length;
+        if (before !== cleaned.length) {
+          updateData.phraseology = cleaned.length > 0
+            ? (cleaned as unknown as Prisma.InputJsonValue)
+            : Prisma.JsonNull;
+          changed = true;
+        }
+      }
+
+      // 8. Очистка цитат
+      if (Array.isArray(entry.citations)) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const cits = entry.citations as any[];
+        const before = cits.length;
+        const cleaned = cits.filter((c) => c.text?.trim());
+        report.cleanedCitations += before - cleaned.length;
+        for (const c of cleaned) {
+          if (c.text.length > MAX_CITATION_LEN) {
+            c.text = c.text.slice(0, MAX_CITATION_LEN);
+            report.truncatedFields++;
+            changed = true;
+          }
+        }
+        if (before !== cleaned.length) {
+          updateData.citations = cleaned.length > 0
+            ? (cleaned as unknown as Prisma.InputJsonValue)
+            : Prisma.JsonNull;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        await this.prisma.unifiedEntry.update({ where: { id: entry.id }, data: updateData });
+        report.updated++;
+      }
+    }
+
+    this.logger.log(`improve-entries: обработано ${entries.length}, обновлено ${report.updated}`);
+
+    return report;
   }
 }
