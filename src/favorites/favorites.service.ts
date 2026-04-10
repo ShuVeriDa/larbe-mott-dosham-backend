@@ -22,6 +22,8 @@ export class FavoritesService {
             nounClass: true,
             cefrLevel: true,
             domain: true,
+            meanings: true,
+            sources: true,
           },
         },
       },
@@ -53,5 +55,10 @@ export class FavoritesService {
       where: { userId_entryId: { userId, entryId } },
     });
     return { favorited: !!existing, entryId };
+  }
+
+  async clearAll(userId: string) {
+    const { count } = await this.prisma.userFavorite.deleteMany({ where: { userId } });
+    return { cleared: count };
   }
 }

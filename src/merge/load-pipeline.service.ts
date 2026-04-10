@@ -34,13 +34,23 @@ export class LoadPipelineService {
 
     const skipped: { word: string; reason: string }[] = [];
     const valid: typeof unified = [];
+    const seenKeys = new Set<string>();
+
     for (const e of unified) {
       if (!e.word?.trim()) {
-        skipped.push({ word: e.word ?? "(пусто)", reason: "пустое слово" });
+        skipped.push({ word: e.word ?? "(пусто)", reason: "no word" });
       } else if (!e.meanings?.length) {
-        skipped.push({ word: e.word, reason: "нет значений" });
+        skipped.push({ word: e.word, reason: "no meanings" });
+      } else if (!e.nounClass && e.partOfSpeech === "сущ.") {
+        skipped.push({ word: e.word, reason: "no nounClass" });
       } else {
-        valid.push(e);
+        const key = `${e.word}__${(e as unknown as Record<string, unknown>).homonymIndex ?? 0}`;
+        if (seenKeys.has(key)) {
+          skipped.push({ word: e.word, reason: "duplicate" });
+        } else {
+          seenKeys.add(key);
+          valid.push(e);
+        }
       }
     }
 
@@ -76,59 +86,86 @@ export class LoadPipelineService {
     const totalChunks = Math.ceil(dbEntries.length / CHUNK);
     const startTime = Date.now();
 
-    await this.prisma.$executeRawUnsafe(
-      `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
-    );
+    try {
+      await this.prisma.$executeRawUnsafe(
+        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
+      );
 
-    await this.prisma.$transaction(
-      async (tx) => {
-        await tx.unifiedEntry.deleteMany();
-        this.logger.log(
-          `Таблица очищена. Загружаю ${dbEntries.length} записей (${totalChunks} чанков по ${CHUNK})...`,
-        );
+      await this.prisma.$transaction(
+        async (tx) => {
+          await tx.unifiedEntry.deleteMany();
+          this.logger.log(
+            `Таблица очищена. Загружаю ${dbEntries.length} записей (${totalChunks} чанков по ${CHUNK})...`,
+          );
 
-        for (let i = 0; i < dbEntries.length; i += CHUNK) {
-          const chunk = dbEntries.slice(i, i + CHUNK);
-          await tx.unifiedEntry.createMany({ data: chunk });
-          const chunkNum = Math.floor(i / CHUNK) + 1;
-          if (chunkNum % 10 === 0 || chunkNum === totalChunks) {
-            this.logger.log(
-              `  чанк ${chunkNum}/${totalChunks} (${i + chunk.length} записей)`,
-            );
+          for (let i = 0; i < dbEntries.length; i += CHUNK) {
+            const chunk = dbEntries.slice(i, i + CHUNK);
+            await tx.unifiedEntry.createMany({ data: chunk });
+            const chunkNum = Math.floor(i / CHUNK) + 1;
+            if (chunkNum % 10 === 0 || chunkNum === totalChunks) {
+              this.logger.log(
+                `  чанк ${chunkNum}/${totalChunks} (${i + chunk.length} записей)`,
+              );
+            }
           }
-        }
-      },
-      { timeout: 120_000 },
-    );
+        },
+        { timeout: 120_000 },
+      );
 
-    await this.prisma.$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "UnifiedEntry_wordNormalized_trgm"
-       ON "UnifiedEntry" USING gin ("wordNormalized" gin_trgm_ops)`,
-    );
+      await this.prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS "UnifiedEntry_wordNormalized_trgm"
+         ON "UnifiedEntry" USING gin ("wordNormalized" gin_trgm_ops)`,
+      );
 
-    this.logger.log("Создаю tsvector-колонку для полнотекстового поиска...");
-    await this.prisma.$executeRawUnsafe(
-      `ALTER TABLE "UnifiedEntry" ADD COLUMN IF NOT EXISTS "meaningsTsv" tsvector`,
-    );
-    await this.prisma.$executeRawUnsafe(`
-      UPDATE "UnifiedEntry" SET "meaningsTsv" = to_tsvector('russian',
-        COALESCE(
-          (SELECT string_agg(elem->>'translation', ' ')
-           FROM jsonb_array_elements(meanings::jsonb) AS elem),
-          ''
+      this.logger.log("Создаю tsvector-колонку для полнотекстового поиска...");
+      await this.prisma.$executeRawUnsafe(
+        `ALTER TABLE "UnifiedEntry" ADD COLUMN IF NOT EXISTS "meaningsTsv" tsvector`,
+      );
+      await this.prisma.$executeRawUnsafe(`
+        UPDATE "UnifiedEntry" SET "meaningsTsv" = to_tsvector('russian',
+          COALESCE(
+            (SELECT string_agg(elem->>'translation', ' ')
+             FROM jsonb_array_elements(meanings::jsonb) AS elem),
+            ''
+          )
         )
-      )
-    `);
-    await this.prisma.$executeRawUnsafe(
-      `CREATE INDEX IF NOT EXISTS "UnifiedEntry_meaningsTsv_gin"
-       ON "UnifiedEntry" USING gin ("meaningsTsv")`,
-    );
+      `);
+      await this.prisma.$executeRawUnsafe(
+        `CREATE INDEX IF NOT EXISTS "UnifiedEntry_meaningsTsv_gin"
+         ON "UnifiedEntry" USING gin ("meaningsTsv")`,
+      );
+    } catch (err) {
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Ошибка загрузки: ${errorMessage}`);
+      await this.prisma.loadRun.create({
+        data: {
+          loaded: 0,
+          skipped: skipped.length,
+          totalInFile: unified.length,
+          elapsedSeconds: Number(elapsed),
+          status: "error",
+          errorMessage,
+        },
+      });
+      throw err;
+    }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
     this.logger.log(
       `Загрузка завершена: ${dbEntries.length} записей за ${elapsed}с`,
     );
+
+    await this.prisma.loadRun.create({
+      data: {
+        loaded: dbEntries.length,
+        skipped: skipped.length,
+        totalInFile: unified.length,
+        elapsedSeconds: Number(elapsed),
+        status: "ok",
+      },
+    });
 
     return {
       loaded: dbEntries.length,
@@ -150,25 +187,69 @@ export class LoadPipelineService {
       );
     }
 
+    const startTime = Date.now();
     const entries = JSON.parse(raw) as (ParsedEntry & { sources: string[] })[];
     const report = {
       total: entries.length,
       removedEmptyMeanings: 0,
       removedBrokenExamples: 0,
       normalizedStyleLabels: 0,
+      normalizedWords: 0,
+      truncatedFields: 0,
+      deduplicatedMeanings: 0,
       cleanedPhraseology: 0,
       cleanedCitations: 0,
     };
 
+    const MAX_TRANSLATION_LEN = 2000;
+    const MAX_CITATION_LEN = 500;
+    const affectedEntries: Array<{ word: string; action: string; source: string }> = [];
+
     for (const entry of entries) {
+      const source = entry.sources?.[0] ?? "";
+
+      // 1. Нормализация слова: trim + Unicode NFC + невидимые символы
+      if (entry.word) {
+        const normalized = entry.word.normalize("NFC").replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+        if (normalized !== entry.word) {
+          entry.word = normalized;
+          report.normalizedWords++;
+          affectedEntries.push({ word: normalized, action: "normalized word", source });
+        }
+      }
+
+      // 2. Удаление meanings без текста
       if (entry.meanings?.length) {
         const beforeLen = entry.meanings.length;
         entry.meanings = entry.meanings.filter(
           (m) => m.translation?.trim() || m.note?.trim(),
         );
-        report.removedEmptyMeanings += beforeLen - entry.meanings.length;
+        const removed = beforeLen - entry.meanings.length;
+        if (removed > 0) {
+          report.removedEmptyMeanings += removed;
+          affectedEntries.push({ word: entry.word, action: "removed empty", source });
+        }
       }
 
+      // 3. Дедупликация meanings (точное совпадение translation)
+      if (entry.meanings?.length) {
+        const seen = new Set<string>();
+        const beforeLen = entry.meanings.length;
+        entry.meanings = entry.meanings.filter((m) => {
+          const key = m.translation?.trim() ?? "";
+          if (!key) return true;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        const deduped = beforeLen - entry.meanings.length;
+        if (deduped > 0) {
+          report.deduplicatedMeanings += deduped;
+          affectedEntries.push({ word: entry.word, action: "dedup meanings", source });
+        }
+      }
+
+      // 4. Исправление битых примеров
       for (const m of entry.meanings ?? []) {
         if (!m.examples) continue;
         const beforeExLen = m.examples.length;
@@ -178,18 +259,34 @@ export class LoadPipelineService {
             return false;
           return true;
         });
-        report.removedBrokenExamples += beforeExLen - m.examples.length;
+        const removedEx = beforeExLen - m.examples.length;
+        if (removedEx > 0) {
+          report.removedBrokenExamples += removedEx;
+          affectedEntries.push({ word: entry.word, action: "fixed example", source });
+        }
         if (m.examples.length === 0) delete m.examples;
       }
 
+      // 5. Обрезка длинных полей (translation > 2000, citation.text > 500)
+      for (const m of entry.meanings ?? []) {
+        if (m.translation && m.translation.length > MAX_TRANSLATION_LEN) {
+          m.translation = m.translation.slice(0, MAX_TRANSLATION_LEN);
+          report.truncatedFields++;
+          affectedEntries.push({ word: entry.word, action: "truncated field", source });
+        }
+      }
+
+      // 6. Нормализация стилевых помет
       if (entry.styleLabel) {
         const normalized = normalizeStyleLabel(entry.styleLabel);
         if (normalized !== entry.styleLabel) {
           report.normalizedStyleLabels++;
           entry.styleLabel = normalized;
+          affectedEntries.push({ word: entry.word, action: "cleaned style", source });
         }
       }
 
+      // 7. Очистка фразеологии
       if (entry.phraseology) {
         const beforeLen = entry.phraseology.length;
         entry.phraseology = entry.phraseology.filter(
@@ -199,18 +296,53 @@ export class LoadPipelineService {
         if (entry.phraseology.length === 0) delete entry.phraseology;
       }
 
+      // 8. Очистка цитат (пустые + обрезка длинных)
       if (entry.citations) {
         const beforeLen = entry.citations.length;
         entry.citations = entry.citations.filter((c) => c.text?.trim());
         report.cleanedCitations += beforeLen - entry.citations.length;
+        for (const c of entry.citations) {
+          if (c.text.length > MAX_CITATION_LEN) {
+            c.text = c.text.slice(0, MAX_CITATION_LEN);
+            report.truncatedFields++;
+          }
+        }
         if (entry.citations.length === 0) delete entry.citations;
       }
     }
 
     await fs.writeFile(filePath, JSON.stringify(entries, null, 2), "utf-8");
 
-    this.logger.log(`improve: обработано ${entries.length} записей`);
+    const elapsedSeconds = Number(((Date.now() - startTime) / 1000).toFixed(2));
 
-    return report;
+    this.logger.log(
+      `improve: обработано ${entries.length} записей за ${elapsedSeconds}с`,
+    );
+
+    await this.prisma.improveRun.create({
+      data: {
+        total: report.total,
+        normalizedStyleLabels: report.normalizedStyleLabels,
+        removedEmptyMeanings: report.removedEmptyMeanings,
+        removedBrokenExamples: report.removedBrokenExamples,
+        normalizedWords: report.normalizedWords,
+        truncatedFields: report.truncatedFields,
+        deduplicatedMeanings: report.deduplicatedMeanings,
+        cleanedPhraseology: report.cleanedPhraseology,
+        cleanedCitations: report.cleanedCitations,
+        elapsedSeconds,
+        status: "ok",
+      },
+    });
+
+    return {
+      ...report,
+      elapsedSeconds,
+      // алиасы для UI
+      cleaned: report.normalizedStyleLabels,
+      fixedExamples: report.removedBrokenExamples,
+      removedEmpty: report.removedEmptyMeanings,
+      affectedEntries: affectedEntries.slice(0, 200),
+    };
   }
 }

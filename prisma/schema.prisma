@@ -41,8 +41,22 @@ model User {
   username           String   @unique
   name               String
   hashedRefreshToken String?  @db.Text
+  avatarUrl  String?
 
   status    String   @default("active") // active | blocked
+
+  // Предпочтения пользователя
+  prefSaveHistory     Boolean @default(true)
+  prefShowExamples    Boolean @default(true)
+  prefCompactView     Boolean @default(false)
+  prefTheme           String  @default("dark")
+  prefLanguage        String  @default("ru")
+  prefHotkeys         Boolean @default(true)
+  prefShowGrammar     Boolean @default(true)
+  prefPerPage         Int     @default(20)
+  prefDefaultCefr     String?
+  prefPublicProfile   Boolean @default(false)
+  prefPublicFavorites Boolean @default(false)
 
   roles     UserRoleAssignment[]
   sessions  UserSession[]
@@ -84,8 +98,9 @@ model UserSession {
   ipAddress String?
   userAgent String?
 
-  createdAt DateTime  @default(now())
-  revokedAt DateTime?
+  createdAt    DateTime  @default(now())
+  lastActiveAt DateTime  @default(now())
+  revokedAt    DateTime?
 
   user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -257,6 +272,44 @@ model EntryEditLog {
   @@index([userId])
   @@index([createdAt])
   @@map("entry_edit_log")
+}
+
+//////////////////////////////////////////////////////
+// PIPELINE HISTORY
+//////////////////////////////////////////////////////
+
+model LoadRun {
+  id             Int      @id @default(autoincrement())
+  createdAt      DateTime @default(now())
+  loaded         Int
+  skipped        Int
+  totalInFile    Int
+  elapsedSeconds Float
+  status         String   // "ok" | "error"
+  errorMessage   String?
+
+  @@index([createdAt])
+  @@map("load_run")
+}
+
+model ImproveRun {
+  id                    Int      @id @default(autoincrement())
+  createdAt             DateTime @default(now())
+  total                 Int
+  normalizedStyleLabels Int
+  removedEmptyMeanings  Int
+  removedBrokenExamples Int
+  normalizedWords       Int
+  truncatedFields       Int
+  deduplicatedMeanings  Int
+  cleanedPhraseology    Int
+  cleanedCitations      Int
+  elapsedSeconds        Float
+  status                String   // "ok" | "error"
+  errorMessage          String?
+
+  @@index([createdAt])
+  @@map("improve_run")
 }
 
 //////////////////////////////////////////////////////

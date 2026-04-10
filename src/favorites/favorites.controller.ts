@@ -1,4 +1,4 @@
-import { Controller, Get, Param, ParseIntPipe, Post } from "@nestjs/common";
+import { Controller, Delete, Get, HttpCode, Param, ParseIntPipe, Post } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { Auth } from "src/auth/decorators/auth.decorator";
 import { User } from "src/user/decorators/user.decorator";
@@ -33,5 +33,12 @@ export class FavoritesController {
     @Param("entryId", ParseIntPipe) entryId: number,
   ) {
     return this.favoritesService.check(userId, entryId);
+  }
+
+  @Delete()
+  @HttpCode(200)
+  @ApiOperation({ summary: "Clear all favorites" })
+  clearAll(@User("id") userId: string) {
+    return this.favoritesService.clearAll(userId);
   }
 }

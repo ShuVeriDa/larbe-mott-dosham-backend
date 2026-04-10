@@ -56,13 +56,59 @@ export class AuthService {
   }
 
   async recordSession(userId: string, ipAddress?: string, userAgent?: string) {
-    await this.prisma.userSession.create({
+    const session = await this.prisma.userSession.create({
       data: {
         userId,
         ipAddress: ipAddress ?? null,
         userAgent: userAgent ?? null,
       },
     });
+    return session.id;
+  }
+
+  async getSessions(userId: string, currentSessionId?: string) {
+    const sessions = await this.prisma.userSession.findMany({
+      where: { userId, revokedAt: null },
+      orderBy: { lastActiveAt: "desc" },
+    });
+
+    return sessions.map((s) => ({
+      id: s.id,
+      userAgent: s.userAgent,
+      ipAddress: s.ipAddress,
+      createdAt: s.createdAt,
+      lastActiveAt: s.lastActiveAt,
+      isCurrent: s.id === currentSessionId,
+    }));
+  }
+
+  async revokeSession(userId: string, sessionId: string, currentSessionId?: string) {
+    const session = await this.prisma.userSession.findFirst({
+      where: { id: sessionId, userId, revokedAt: null },
+    });
+
+    if (!session) throw new Error("Session not found or already revoked");
+    if (session.id === currentSessionId) throw new Error("Cannot revoke current session");
+
+    await this.prisma.userSession.update({
+      where: { id: sessionId },
+      data: { revokedAt: new Date() },
+    });
+
+    return { message: "Сессия завершена" };
+  }
+
+  async revokeAllOtherSessions(userId: string, currentSessionId?: string) {
+    const result = await this.prisma.userSession.updateMany({
+      where: {
+        userId,
+        revokedAt: null,
+        ...(currentSessionId && { NOT: { id: currentSessionId } }),
+      },
+      data: { revokedAt: new Date() },
+    });
+
+    return { message: "Все другие сессии завершены", count: result.count };
   }
 
   addRefreshTokenResponse(res: Response, refreshToken: string) {

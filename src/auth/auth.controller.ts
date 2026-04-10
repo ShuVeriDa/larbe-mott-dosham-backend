@@ -1,8 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
+  ForbiddenException,
   Get,
   HttpCode,
+  NotFoundException,
+  Param,
   Post,
   Req,
   Res,
@@ -17,9 +21,11 @@ import {
   ApiBadRequestResponse,
   ApiConflictResponse,
   ApiCreatedResponse,
+  ApiForbiddenResponse,
   ApiNotFoundResponse,
   ApiOkResponse,
   ApiOperation,
+  ApiParam,
   ApiTags,
   ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
@@ -151,5 +157,58 @@ export class AuthController {
   @ApiBadRequestResponse({ description: "Invalid or expired token" })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto.token, dto.newPassword);
+  }
+
+  // ─── Sessions ──────────────────────────────────────────────────────────────
+
+  @Auth()
+  @Get("sessions")
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Список активных сессий текущего пользователя" })
+  @ApiOkResponse({ description: "Массив сессий с флагом isCurrent" })
+  getSessions(
+    @User("id") userId: string,
+    @Req() req: express.Request,
+  ) {
+    const currentSessionId = (req as { sessionId?: string }).sessionId;
+    return this.authService.getSessions(userId, currentSessionId);
+  }
+
+  @Auth()
+  @Delete("sessions/:id")
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiParam({ name: "id", description: "ID сессии" })
+  @ApiOperation({ summary: "Завершить конкретную сессию" })
+  @ApiOkResponse({ description: "Сессия завершена" })
+  @ApiForbiddenResponse({ description: "Нельзя завершить текущую сессию" })
+  @ApiNotFoundResponse({ description: "Сессия не найдена" })
+  async revokeSession(
+    @User("id") userId: string,
+    @Param("id") sessionId: string,
+    @Req() req: express.Request,
+  ) {
+    const currentSessionId = (req as { sessionId?: string }).sessionId;
+    try {
+      return await this.authService.revokeSession(userId, sessionId, currentSessionId);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes("Cannot revoke current")) throw new ForbiddenException("Нельзя завершить текущую сессию");
+      throw new NotFoundException("Сессия не найдена или уже завершена");
+    }
+  }
+
+  @Auth()
+  @Delete("sessions")
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Завершить все сессии кроме текущей" })
+  @ApiOkResponse({ description: "{ count: number }" })
+  revokeAllSessions(
+    @User("id") userId: string,
+    @Req() req: express.Request,
+  ) {
+    const currentSessionId = (req as { sessionId?: string }).sessionId;
+    return this.authService.revokeAllOtherSessions(userId, currentSessionId);
   }
 }

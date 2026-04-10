@@ -64,6 +64,8 @@ test-lookup-result.txt
 test-lookup-result2.txt
 missing-ids.md
 
+audit-pages.js
+
 design
 docs/*
 prompt.md

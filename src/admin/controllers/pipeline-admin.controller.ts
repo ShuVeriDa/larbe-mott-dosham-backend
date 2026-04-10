@@ -1,4 +1,4 @@
-import { Controller, Param, ParseIntPipe, Post } from "@nestjs/common";
+import { Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { PermissionCode } from "@prisma/client";
 import { AdminPermission } from "src/auth/decorators/admin-permission.decorator";
@@ -45,5 +45,49 @@ export class PipelineAdminController {
   @ApiOperation({ summary: "Reset all merge steps" })
   reset() {
     return this.adminService.runReset();
+  }
+
+  @Get("status")
+  @ApiOperation({ summary: "Pipeline status: isRunning, currentOperation, lastRun, parsed files, unified file, DB count" })
+  status() {
+    return this.adminService.getPipelineStatus();
+  }
+
+  @Get("unified-log")
+  @ApiOperation({ summary: "Merge log: completed steps, remaining slugs, nextRecommended" })
+  unifiedLog() {
+    return this.adminService.getUnifiedLog();
+  }
+
+  @Get("parsed-files")
+  @ApiOperation({ summary: "List parsed JSON files with size and modification date" })
+  parsedFiles() {
+    return this.adminService.getParsedFiles();
+  }
+
+  @Get("log")
+  @ApiOperation({ summary: "In-memory pipeline operation log (last 100 entries)" })
+  pipelineLog() {
+    return this.adminService.getPipelineLog();
+  }
+
+  @Delete("log")
+  @ApiOperation({ summary: "Clear in-memory pipeline operation log" })
+  clearLog() {
+    return this.adminService.clearPipelineLog();
+  }
+
+  @Get("load-history")
+  @ApiOperation({ summary: "Load runs history from DB (last N entries, default 20)" })
+  loadHistory(@Query("limit") limit?: string) {
+    const n = Math.min(Math.max(parseInt(limit ?? "20", 10) || 20, 1), 100);
+    return this.adminService.getLoadHistory(n);
+  }
+
+  @Get("improve-history")
+  @ApiOperation({ summary: "Improve runs history from DB (last N entries, default 20)" })
+  improveHistory(@Query("limit") limit?: string) {
+    const n = Math.min(Math.max(parseInt(limit ?? "20", 10) || 20, 1), 100);
+    return this.adminService.getImproveHistory(n);
   }
 }

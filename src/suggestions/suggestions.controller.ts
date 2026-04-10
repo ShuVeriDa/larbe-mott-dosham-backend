@@ -41,8 +41,12 @@ export class SuggestionsController {
   @Auth()
   @ApiBearerAuth()
   @ApiOperation({ summary: "Get my submitted suggestions" })
-  my(@User("id") userId: string) {
-    return this.suggestionsService.getMySubmissions(userId);
+  my(
+    @User("id") userId: string,
+    @Query("limit", new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset: number,
+  ) {
+    return this.suggestionsService.getMySubmissions(userId, limit, offset);
   }
 
   /** Admin: список всех предложений */

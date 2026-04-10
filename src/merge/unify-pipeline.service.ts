@@ -35,11 +35,13 @@ export interface MergeLogEntry {
   slug: string;
   title: string;
   timestamp: string;
+  durationSeconds: number;
   entriesFromDict: number;
   newWords: number;
   enrichedWords: number;
   totalUnifiedEntries: number;
   snapshotFile: string;
+  snapshotSizeMb: number;
 }
 
 function entryKey(entry: ParsedEntry): string {
@@ -78,6 +80,7 @@ export class UnifyPipelineService {
       );
     }
 
+    const startTime = Date.now();
     const isNeologismSource = NEOLOGISM_SLUGS.has(slug);
     let added = 0;
     let enriched = 0;
@@ -109,16 +112,22 @@ export class UnifyPipelineService {
     await fs.mkdir(path.dirname(snapshotPath), { recursive: true });
     await fs.copyFile(path.resolve(process.cwd(), UNIFIED_FILE), snapshotPath);
 
+    const durationSeconds = Number(((Date.now() - startTime) / 1000).toFixed(2));
+    const snapshotStat = await fs.stat(snapshotPath);
+    const snapshotSizeMb = Number((snapshotStat.size / 1024 / 1024).toFixed(1));
+
     const logEntry: MergeLogEntry = {
       step,
       slug,
       title: meta.title,
       timestamp: new Date().toISOString(),
+      durationSeconds,
       entriesFromDict: newEntries.length,
       newWords: added,
       enrichedWords: enriched,
       totalUnifiedEntries: merged.size,
       snapshotFile,
+      snapshotSizeMb,
     };
     log.push(logEntry);
     await this.writeMergeLog(log);
@@ -129,6 +138,7 @@ export class UnifyPipelineService {
 
     const addedSlugs = new Set(log.map((e) => e.slug));
     const nextSlug = MERGE_ORDER.find((s) => !addedSlugs.has(s)) ?? null;
+    const nextMeta = nextSlug ? DICTIONARIES.find((d) => d.slug === nextSlug) : null;
 
     return {
       step,
@@ -139,17 +149,40 @@ export class UnifyPipelineService {
       enrichedWords: enriched,
       totalUnifiedEntries: merged.size,
       snapshotFile,
-      nextRecommended: nextSlug,
+      snapshotSizeMb,
+      nextRecommended: nextSlug ? { slug: nextSlug, title: nextMeta?.title ?? nextSlug } : null,
     };
   }
 
   async getUnifiedLog() {
     const log = await this.readMergeLog();
+
+    const stepsWithExistence = await Promise.all(
+      log.map(async (entry) => {
+        let snapshotExists = false;
+        try {
+          await fs.access(path.resolve(process.cwd(), entry.snapshotFile));
+          snapshotExists = true;
+        } catch {
+          /* файл не найден */
+        }
+        return { ...entry, snapshotExists };
+      }),
+    );
+
     const addedSlugs = new Set(log.map((e) => e.slug));
-    const remaining = MERGE_ORDER.filter((s) => !addedSlugs.has(s));
+    const remaining = MERGE_ORDER.filter((s) => !addedSlugs.has(s)).map((s) => {
+      const meta = DICTIONARIES.find((d) => d.slug === s);
+      return { slug: s, title: meta?.title ?? s };
+    });
+    const totalSnapshotSizeMb = Number(
+      stepsWithExistence.reduce((sum, e) => sum + (e.snapshotSizeMb ?? 0), 0).toFixed(1),
+    );
+
     return {
-      steps: log,
+      steps: stepsWithExistence,
       totalSteps: log.length,
+      totalSnapshotSizeMb,
       remaining,
       nextRecommended: remaining[0] ?? null,
     };
@@ -165,6 +198,20 @@ export class UnifyPipelineService {
     }
 
     const unifiedPath = path.resolve(process.cwd(), UNIFIED_FILE);
+
+    // Создаём резервный снапшот текущего состояния перед откатом
+    let backupFile: string | null = null;
+    try {
+      const now = new Date();
+      const ts = now.toISOString().replace(/[-:T]/g, "").slice(0, 15);
+      backupFile = `${UNIFIED_DIR}/backup_before_rollback_${ts}.json`;
+      const backupPath = path.resolve(process.cwd(), backupFile);
+      await fs.mkdir(path.dirname(backupPath), { recursive: true });
+      await fs.copyFile(unifiedPath, backupPath);
+    } catch {
+      // unified.json мог не существовать — не критично
+      backupFile = null;
+    }
 
     if (step === 0) {
       try {
@@ -189,6 +236,7 @@ export class UnifyPipelineService {
 
     const addedSlugs = new Set(trimmedLog.map((e) => e.slug));
     const nextSlug = MERGE_ORDER.find((s) => !addedSlugs.has(s)) ?? null;
+    const nextMeta = nextSlug ? DICTIONARIES.find((d) => d.slug === nextSlug) : null;
 
     this.logger.log(
       `Откат к шагу ${step}${step > 0 ? ` (${log[step - 1].slug})` : " (пустой)"}`,
@@ -198,26 +246,66 @@ export class UnifyPipelineService {
       rolledBackTo: step,
       currentEntries: step > 0 ? log[step - 1].totalUnifiedEntries : 0,
       stepsRemoved: log.length - step,
-      nextRecommended: nextSlug,
+      backupFile,
+      nextRecommended: nextSlug ? { slug: nextSlug, title: nextMeta?.title ?? nextSlug } : null,
     };
   }
 
   async resetSteps() {
+    // Собираем статистику до удаления
+    let unifiedEntries = 0;
+    let freedMb = 0;
+
     const unifiedPath = path.resolve(process.cwd(), UNIFIED_FILE);
+    try {
+      const [raw, stat] = await Promise.all([
+        fs.readFile(unifiedPath, "utf-8"),
+        fs.stat(unifiedPath),
+      ]);
+      unifiedEntries = (JSON.parse(raw) as unknown[]).length;
+      freedMb += stat.size / 1024 / 1024;
+    } catch {
+      /* файла нет */
+    }
+
+    let deletedSnapshots = 0;
+    const unifiedDir = path.resolve(process.cwd(), UNIFIED_DIR);
+    try {
+      const files = await fs.readdir(unifiedDir);
+      await Promise.all(
+        files.map(async (f) => {
+          try {
+            const stat = await fs.stat(path.join(unifiedDir, f));
+            freedMb += stat.size / 1024 / 1024;
+            if (f.endsWith(".json") && f !== "merge_log.json") deletedSnapshots++;
+          } catch {
+            /* файл исчез */
+          }
+        }),
+      );
+    } catch {
+      /* папки нет */
+    }
+
+    // Удаляем
     try {
       await fs.unlink(unifiedPath);
     } catch {
       /* нет файла */
     }
-
-    const unifiedDir = path.resolve(process.cwd(), UNIFIED_DIR);
     try {
       await fs.rm(unifiedDir, { recursive: true });
     } catch {
       /* нет папки */
     }
 
-    return { reset: true, message: "unified.json, снэпшоты и лог удалены" };
+    return {
+      reset: true,
+      message: "unified.json, снэпшоты и лог удалены",
+      unifiedEntries,
+      deletedSnapshots,
+      freedMb: Number(freedMb.toFixed(1)),
+    };
   }
 
   // --- Private helpers ---

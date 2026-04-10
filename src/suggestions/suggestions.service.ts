@@ -56,12 +56,22 @@ export class SuggestionsService {
     });
   }
 
-  async getMySubmissions(userId: string) {
-    return this.prisma.suggestion.findMany({
-      where: { userId },
-      include: { entry: { select: { id: true, word: true } } },
-      orderBy: { createdAt: "desc" },
-    });
+  async getMySubmissions(userId: string, limit = 20, offset = 0) {
+    const where = { userId };
+    const [data, total] = await Promise.all([
+      this.prisma.suggestion.findMany({
+        where,
+        include: {
+          entry: { select: { id: true, word: true } },
+          reviewer: { select: { id: true, name: true, username: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        skip: offset,
+      }),
+      this.prisma.suggestion.count({ where }),
+    ]);
+    return { data, meta: { total, limit, offset } };
   }
 
   /** Admin: список всех предложений с фильтром по статусу */
