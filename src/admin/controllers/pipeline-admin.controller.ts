@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Post, Query, Req } from "@nestjs/common";
 import { ApiBearerAuth, ApiOperation, ApiTags } from "@nestjs/swagger";
 import { PermissionCode } from "@prisma/client";
 import { AdminPermission } from "src/auth/decorators/admin-permission.decorator";
@@ -26,26 +26,26 @@ export class PipelineAdminController {
 
   @Post("load")
   @ApiOperation({ summary: "Load unified.json into database" })
-  load() {
-    return this.adminService.runLoad();
+  load(@Req() req: any) {
+    return this.adminService.runLoad(req.user?.id as string | undefined);
   }
 
   @Post("improve")
   @ApiOperation({ summary: "Run improve on unified.json" })
-  improve() {
-    return this.adminService.runImprove();
+  improve(@Req() req: any) {
+    return this.adminService.runImprove(req.user?.id as string | undefined);
   }
 
   @Post("improve-entries")
   @ApiOperation({ summary: "Run improve on specific DB entries by IDs (max 500)" })
-  improveEntries(@Body() body: ImproveEntriesDto) {
-    return this.adminService.runImproveEntries(body.ids);
+  improveEntries(@Body() body: ImproveEntriesDto, @Req() req: any) {
+    return this.adminService.runImproveEntries(body.ids, req.user?.id as string | undefined);
   }
 
   @Post("rollback/:step")
   @ApiOperation({ summary: "Rollback to a specific step" })
-  rollback(@Param("step", ParseIntPipe) step: number) {
-    return this.adminService.runRollback(step);
+  rollback(@Param("step", ParseIntPipe) step: number, @Req() req: any) {
+    return this.adminService.runRollback(step, req.user?.id as string | undefined);
   }
 
   @Post("reset")

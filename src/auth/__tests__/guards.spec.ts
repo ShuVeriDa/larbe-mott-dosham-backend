@@ -54,6 +54,20 @@ describe("ApiKeyGuard", () => {
     ).rejects.toThrow(UnauthorizedException);
   });
 
+  it("throws for expired key", async () => {
+    prisma.apiKey.findUnique.mockResolvedValue({
+      id: "k1",
+      key: "valid",
+      isActive: true,
+      role: RoleName.USER,
+      expiresAt: new Date(Date.now() - 1000), // 1 second in the past
+    });
+
+    await expect(
+      guard.canActivate(mockContext({ "x-api-key": "valid" }) as any),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
   it("allows active key with no role restrictions", async () => {
     prisma.apiKey.findUnique.mockResolvedValue({
       id: "k1",

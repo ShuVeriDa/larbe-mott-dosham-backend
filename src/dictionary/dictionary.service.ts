@@ -14,6 +14,12 @@ import { UpdateEntryDto, BulkUpdateItemDto } from "./dto/update-entry.dto";
 const CACHE_TTL = 300; // 5 минут
 const CACHE_PREFIX = "dict";
 
+export interface AuditActor {
+  userId?: string;
+  apiKeyId?: string;
+  actorType: "admin" | "api";
+}
+
 type SourceDirection = "nah→ru" | "ru→nah" | "оба";
 
 interface SourceMeta {
@@ -429,25 +435,62 @@ export class DictionaryService {
     return entry;
   }
 
-  async deleteEntry(id: number) {
-    await this.getById(id);
+  async deleteEntry(id: number, actor?: AuditActor) {
+    const entry = await this.getById(id);
     await this.prisma.unifiedEntry.delete({ where: { id } });
     await this.invalidateCache();
+    if (actor !== undefined) {
+      void (this.prisma.entryEditLog as any)
+        .create({
+          data: {
+            entryId: null,
+            userId: actor.userId ?? null,
+            apiKeyId: actor.apiKeyId ?? null,
+            actorType: actor.actorType,
+            action: "delete",
+            changes: { deletedEntry: { id, word: entry.word } },
+          },
+        })
+        .catch(() => {});
+    }
     return { deleted: true, id };
   }
 
-  async updateEntry(id: number, dto: UpdateEntryDto) {
-    await this.getById(id);
+  async updateEntry(id: number, dto: UpdateEntryDto, actor?: AuditActor) {
+    const before = await this.getById(id);
     const data = this.buildUpdateData(dto);
     const result = await this.prisma.unifiedEntry.update({
       where: { id },
       data,
     });
     await this.invalidateCache();
+    if (actor !== undefined) {
+      const changes: Record<string, { old: unknown; new: unknown }> = {};
+      for (const key of Object.keys(dto)) {
+        if ((dto as Record<string, unknown>)[key] !== undefined) {
+          changes[key] = {
+            old: (before as Record<string, unknown>)[key],
+            new: (dto as Record<string, unknown>)[key],
+          };
+        }
+      }
+      void (this.prisma.entryEditLog as any)
+        .create({
+          data: {
+            entryId: id,
+            userId: actor.userId ?? null,
+            apiKeyId: actor.apiKeyId ?? null,
+            actorType: actor.actorType,
+            action: "update",
+            changes,
+          },
+        })
+        .catch(() => {});
+    }
     return result;
   }
 
-  async bulkUpdate(items: BulkUpdateItemDto[]) {
+  async bulkUpdate(items: BulkUpdateItemDto[], actor?: AuditActor) {
     const startTime = Date.now();
     const results: { id: number; success: boolean; error?: string }[] = [];
 
@@ -477,6 +520,25 @@ export class DictionaryService {
     });
 
     await this.invalidateCache();
+
+    if (actor !== undefined) {
+      const successIds = results.filter((r) => r.success).map((r) => r.id);
+      if (successIds.length > 0) {
+        void (this.prisma.entryEditLog as any)
+          .create({
+            data: {
+              entryId: null,
+              userId: actor.userId ?? null,
+              apiKeyId: actor.apiKeyId ?? null,
+              actorType: actor.actorType,
+              action: "bulk",
+              changes: { _meta: { count: successIds.length, ids: successIds } },
+            },
+          })
+          .catch(() => {});
+      }
+    }
+
     return {
       total: items.length,
       updated: results.filter((r) => r.success).length,

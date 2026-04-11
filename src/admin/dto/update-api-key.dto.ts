@@ -2,6 +2,7 @@ import { ApiPropertyOptional } from "@nestjs/swagger";
 import { RoleName } from "@prisma/client";
 import {
   IsBoolean,
+  IsDateString,
   IsEnum,
   IsOptional,
   IsString,
@@ -24,4 +25,12 @@ export class UpdateApiKeyDto {
   @IsOptional()
   @IsEnum(RoleName)
   role?: RoleName;
+
+  @ApiPropertyOptional({
+    example: "2027-01-01T00:00:00.000Z",
+    description: "Дата истечения ключа",
+  })
+  @IsOptional()
+  @IsDateString()
+  expiresAt?: string;
 }

@@ -30,7 +30,13 @@ export class AuthService {
   async login(dto: LoginDto) {
     const user = await this.validateUser(dto);
     const tokens = await this.issueTokens(user.id);
-    await this.updateRefreshTokenHash(user.id, tokens.refreshToken);
+    await Promise.all([
+      this.updateRefreshTokenHash(user.id, tokens.refreshToken),
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: { lastLoggedIn: new Date() },
+      }),
+    ]);
     this.logger.log(`Login successful: ${user.username} (${user.id})`);
     return { user, ...tokens };
   }

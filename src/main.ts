@@ -1,18 +1,21 @@
-import { Logger, ValidationPipe } from "@nestjs/common";
+import { ValidationPipe } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { NestFactory } from "@nestjs/core";
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import * as dotenv from "dotenv";
+import { WINSTON_MODULE_NEST_PROVIDER } from "nest-winston";
 import { AppModule } from "./app.module";
-import { AllExceptionsFilter } from "./common/filters/all-exceptions.filter";
-import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
 
 async function bootstrap() {
   dotenv.config();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { logger: false });
+
+  // После инициализации переключаем на Winston
+  app.useLogger(app.get(WINSTON_MODULE_NEST_PROVIDER));
+
   const configService = app.get(ConfigService);
 
   const port = configService.get<number>("PORT") ?? 9666;
@@ -31,7 +34,7 @@ async function bootstrap() {
 
   app.enableCors({
     origin: allowedOrigins,
-    credentials: true, // Включение поддержки отправки cookie через CORS
+    credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",
@@ -39,16 +42,15 @@ async function bootstrap() {
       "X-Requested-With",
       "Accept",
       "Origin",
+      "X-Correlation-Id",
+      "x-correlation-id",
       "Access-Control-Request-Method",
       "Access-Control-Request-Headers",
     ],
-    exposedHeaders: ["set-cookie"], // Разрешение клиенту доступа к заголовку 'set-cookie' в ответе сервера
+    exposedHeaders: ["set-cookie", "x-correlation-id"],
     preflightContinue: false,
     optionsSuccessStatus: 204,
   });
-
-  app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalInterceptors(new LoggingInterceptor());
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -61,8 +63,8 @@ async function bootstrap() {
   // Swagger only in development
   if (nodeEnv !== "production") {
     const swaggerConfig = new DocumentBuilder()
-      .setTitle("MottLarbe API")
-      .setDescription("API documentation for the MottLarbe platform")
+      .setTitle("MottLarbe Dosham API")
+      .setDescription("API documentation for the MottLarbe Dosham platform")
       .setVersion("1.0")
       .addBearerAuth({
         type: "http",
@@ -77,24 +79,15 @@ async function bootstrap() {
 
     const swaggerDocument = SwaggerModule.createDocument(app, swaggerConfig);
     SwaggerModule.setup("api/docs", app, swaggerDocument, {
-      swaggerOptions: {
-        persistAuthorization: true,
-      },
-      customSiteTitle: "MottLarbe API Docs",
+      swaggerOptions: { persistAuthorization: true },
+      customSiteTitle: "MottLarbe Dosham API Docs",
     });
-
-    const httpAdapter = app.getHttpAdapter().getInstance();
-
-    if (typeof httpAdapter.get === "function") {
-      httpAdapter.get("/api", (_req: Request, res: Response) => {
-        (res as any).redirect("/api/docs");
-      });
-    }
   }
 
   await app.listen(port);
-  new Logger("Bootstrap").log(
-    `Application is running on: http://localhost:${port}`,
-  );
+
+  const logger = app.get(WINSTON_MODULE_NEST_PROVIDER);
+  logger.log(`Application is running on http://localhost:${port}`, "Bootstrap");
 }
+
 void bootstrap();

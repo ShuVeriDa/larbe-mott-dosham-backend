@@ -10,6 +10,7 @@ import {
   ParseIntPipe,
   Patch,
   Query,
+  Req,
 } from "@nestjs/common";
 import {
   ApiBearerAuth,
@@ -19,7 +20,7 @@ import {
 } from "@nestjs/swagger";
 import { PermissionCode } from "@prisma/client";
 import { AdminPermission } from "src/auth/decorators/admin-permission.decorator";
-import { DictionaryService } from "./dictionary.service";
+import { AuditActor, DictionaryService } from "./dictionary.service";
 import { DeclensionService } from "./declension.service";
 import { ConjugationService } from "./conjugation.service";
 import { SearchEntryDto } from "./dto/search-entry.dto";
@@ -136,8 +137,8 @@ export class DictionaryController {
     summary: "Bulk update multiple entries (up to 100 at once)",
   })
   @ApiOkResponse({ description: "Bulk update results" })
-  bulkUpdate(@Body() dto: BulkUpdateEntriesDto) {
-    return this.dictionaryService.bulkUpdate(dto.entries);
+  bulkUpdate(@Body() dto: BulkUpdateEntriesDto, @Req() req: any) {
+    return this.dictionaryService.bulkUpdate(dto.entries, this.extractActor(req));
   }
 
   @Get(":id")
@@ -152,8 +153,8 @@ export class DictionaryController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: "Delete a single dictionary entry" })
   @ApiOkResponse({ description: "Entry deleted" })
-  delete(@Param("id", ParseIntPipe) id: number) {
-    return this.dictionaryService.deleteEntry(id);
+  delete(@Param("id", ParseIntPipe) id: number, @Req() req: any) {
+    return this.dictionaryService.deleteEntry(id, this.extractActor(req));
   }
 
   @Patch(":id")
@@ -161,7 +162,13 @@ export class DictionaryController {
   @ApiBearerAuth()
   @ApiOperation({ summary: "Update a single dictionary entry" })
   @ApiOkResponse({ description: "Entry updated" })
-  update(@Param("id", ParseIntPipe) id: number, @Body() dto: UpdateEntryDto) {
-    return this.dictionaryService.updateEntry(id, dto);
+  update(@Param("id", ParseIntPipe) id: number, @Body() dto: UpdateEntryDto, @Req() req: any) {
+    return this.dictionaryService.updateEntry(id, dto, this.extractActor(req));
+  }
+
+  private extractActor(req: any): AuditActor | undefined {
+    if (req.user?.id) return { userId: req.user.id as string, actorType: "admin" };
+    if (req.apiKey?.id) return { apiKeyId: req.apiKey.id as string, actorType: "api" };
+    return undefined;
   }
 }

@@ -1,15 +1,24 @@
-import { Injectable, NestMiddleware } from "@nestjs/common";
 import { randomUUID } from "crypto";
-import { Request, Response, NextFunction } from "express";
+import type { NextFunction, Request, Response } from "express";
+
+export interface CorrelationRequest extends Request {
+  correlationId?: string;
+  requestStartMs?: number;
+}
 
 const HEADER = "x-correlation-id";
 
-@Injectable()
-export class CorrelationIdMiddleware implements NestMiddleware {
-  use(req: Request, res: Response, next: NextFunction) {
-    const id = (req.get(HEADER) as string | undefined) ?? randomUUID();
-    req.headers[HEADER] = id;
-    res.setHeader(HEADER, id);
-    next();
-  }
+export function correlationIdMiddleware(
+  req: CorrelationRequest,
+  res: Response,
+  next: NextFunction,
+): void {
+  const incoming = req.get(HEADER) ?? req.get("x-request-id");
+  const correlationId = incoming && incoming.trim() ? incoming : randomUUID();
+
+  req.correlationId = correlationId;
+  req.requestStartMs = Date.now();
+
+  res.setHeader(HEADER, correlationId);
+  next();
 }

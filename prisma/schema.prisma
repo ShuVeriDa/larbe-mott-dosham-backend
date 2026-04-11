@@ -43,7 +43,11 @@ model User {
   hashedRefreshToken String?  @db.Text
   avatarUrl  String?
 
-  status    String   @default("active") // active | blocked
+  status       String    @default("active") // active | blocked
+  banReason    String?
+  emailVerified    Boolean   @default(false)
+  emailVerifiedAt  DateTime?
+  lastLoggedIn DateTime? // updated on each successful login
 
   // Предпочтения пользователя
   prefSaveHistory     Boolean @default(true)
@@ -168,13 +172,14 @@ model UserRoleAssignment {
 //////////////////////////////////////////////////////
 
 model ApiKey {
-  id          String   @id @default(uuid())
-  key         String   @unique
-  name        String   // "Читалка", "MottLarbe Admin" и т.п.
-  role        RoleName @default(USER) // какие права у этого ключа
-  isActive    Boolean  @default(true)
+  id          String    @id @default(uuid())
+  key         String    @unique
+  name        String    // "Читалка", "MottLarbe Admin" и т.п.
+  role        RoleName  @default(USER) // какие права у этого ключа
+  isActive    Boolean   @default(true)
+  expiresAt   DateTime? // null = бессрочный
 
-  createdAt   DateTime @default(now())
+  createdAt   DateTime  @default(now())
   lastUsedAt  DateTime?
 
   @@index([key])
@@ -255,21 +260,24 @@ model Suggestion {
 //////////////////////////////////////////////////////
 
 model EntryEditLog {
-  id       String @id @default(uuid())
-  entryId  Int
-  userId   String?  // null если через API-ключ
-  apiKeyId String?  // null если через JWT
+  id        String  @id @default(uuid())
+  entryId   Int?    // null для pipeline/bulk-событий без конкретной записи
+  userId    String? // null если через API-ключ или pipeline
+  apiKeyId  String? // null если через JWT или pipeline
+  actorType String? // "admin" | "pipeline" | "api"
 
-  action   String   // "update" | "bulk_update"
-  changes  Json     // { field: { old: ..., new: ... }, ... }
+  action   String   // "create" | "update" | "delete" | "bulk" | "pipeline" | "revert"
+  changes  Json     // { field: { old: ..., new: ... }, ... } или { command: ... }
 
-  user     User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
-  entry    UnifiedEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  user     User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  entry    UnifiedEntry? @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
   @@index([entryId])
   @@index([userId])
+  @@index([actorType])
+  @@index([action])
   @@index([createdAt])
   @@map("entry_edit_log")
 }

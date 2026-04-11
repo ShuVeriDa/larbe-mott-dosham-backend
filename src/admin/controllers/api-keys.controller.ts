@@ -31,7 +31,7 @@ export class ApiKeysController {
   @Post()
   @ApiOperation({ summary: "Create a new API key" })
   createKey(@Body() dto: CreateApiKeyDto) {
-    return this.adminService.createApiKey(dto.name, dto.role);
+    return this.adminService.createApiKey(dto.name, dto.role, dto.expiresAt);
   }
 
   @Patch(":id")

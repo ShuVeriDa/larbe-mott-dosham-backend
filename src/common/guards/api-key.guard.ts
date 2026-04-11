@@ -39,6 +39,10 @@ export class ApiKeyGuard implements CanActivate {
       throw new UnauthorizedException("Invalid or inactive API key");
     }
 
+    if (apiKey.expiresAt && apiKey.expiresAt < new Date()) {
+      throw new UnauthorizedException("API key has expired");
+    }
+
     // Проверяем допустимые роли (если заданы через @SetMetadata)
     const allowedRoles = this.reflector.get<RoleName[] | undefined>(
       API_KEY_ROLES_KEY,
