@@ -49,6 +49,15 @@ export class SuggestionsController {
     return this.suggestionsService.getMySubmissions(userId, limit, offset);
   }
 
+  /** Admin: статистика предложений */
+  @Get("stats")
+  @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get suggestions stats (admin)" })
+  stats() {
+    return this.suggestionsService.stats();
+  }
+
   /** Admin: список всех предложений */
   @Get()
   @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
@@ -58,9 +67,33 @@ export class SuggestionsController {
     @Query("status") status?: string,
     @Query("limit", new DefaultValuePipe(50), ParseIntPipe) limit?: number,
     @Query("offset", new DefaultValuePipe(0), ParseIntPipe) offset?: number,
+    @Query("order") order?: string,
+    @Query("q") q?: string,
   ) {
     const s = status as SuggestionStatus | undefined;
-    return this.suggestionsService.list(s, limit, offset);
+    const o = order === "asc" ? "asc" : "desc";
+    return this.suggestionsService.list(s, limit, offset, o, q);
+  }
+
+  /** Admin: получить одно предложение со всеми связями */
+  @Get(":id/adjacent")
+  @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get adjacent suggestions (prev/next)" })
+  adjacent(
+    @Param("id") id: string,
+    @Query("status") status?: string,
+  ) {
+    const s = status as SuggestionStatus | undefined;
+    return this.suggestionsService.findAdjacent(id, s);
+  }
+
+  @Get(":id")
+  @AdminPermission(PermissionCode.CAN_EDIT_ENTRIES)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get a single suggestion with relations" })
+  findOne(@Param("id") id: string) {
+    return this.suggestionsService.findOne(id);
   }
 
   /** Admin: одобрить или отклонить */

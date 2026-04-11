@@ -26,6 +26,12 @@ export class UsersAdminController {
     return this.adminService.listUsers();
   }
 
+  @Get(":id")
+  @ApiOperation({ summary: "Get user profile" })
+  getUser(@Param("id", ParseUUIDPipe) id: string) {
+    return this.adminService.getUser(id);
+  }
+
   @Patch(":id/role")
   @ApiOperation({ summary: "Assign role to user" })
   assignRole(

@@ -60,6 +60,25 @@ export class AdminService {
     });
   }
 
+  async getUser(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        name: true,
+        status: true,
+        createdAt: true,
+        roles: {
+          select: { role: { select: { name: true } } },
+        },
+      },
+    });
+    if (!user) throw new NotFoundException(`User #${userId} not found`);
+    return user;
+  }
+
   async assignRole(userId: string, roleName: RoleName) {
     const role = await this.prisma.role.findUnique({
       where: { name: roleName },
