@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -14,11 +15,13 @@ import {
 } from "@nestjs/common";
 import { ForgotPasswordDto } from "./dto/forgot-password.dto";
 import { ResetPasswordDto } from "./dto/reset-password.dto";
+import { ResetPasswordPhoneDto } from "./dto/reset-password-phone.dto";
 import { ConfigService } from "@nestjs/config";
 import { Throttle } from "@nestjs/throttler";
 import {
   ApiBearerAuth,
   ApiBadRequestResponse,
+  ApiBody,
   ApiConflictResponse,
   ApiCreatedResponse,
   ApiForbiddenResponse,
@@ -141,22 +144,43 @@ export class AuthController {
   @Throttle({ default: { limit: 3, ttl: 60000 } })
   @HttpCode(200)
   @Post("forgot-password")
-  @ApiOperation({ summary: "Request password reset link" })
-  @ApiOkResponse({
-    description: "Reset token sent (token exposed only in non-production)",
+  @ApiOperation({
+    summary: "Запрос сброса пароля",
+    description:
+      "Передайте `email` ИЛИ `phone` (не оба одновременно). " +
+      "По email придёт письмо со ссылкой/токеном, по телефону — SMS с 6-значным OTP-кодом.",
   })
+  @ApiBody({ type: ForgotPasswordDto })
+  @ApiOkResponse({ description: "Письмо/SMS отправлены (токен/OTP в ответе только в dev)" })
+  @ApiBadRequestResponse({ description: "Не указан ни email, ни phone" })
   forgotPassword(@Body() dto: ForgotPasswordDto) {
-    return this.authService.forgotPassword(dto.email);
+    if (dto.email) {
+      return this.authService.forgotPasswordByEmail(dto.email);
+    }
+    if (dto.phone) {
+      return this.authService.forgotPasswordByPhone(dto.phone);
+    }
+    throw new BadRequestException("Укажите email или номер телефона");
   }
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(200)
   @Post("reset-password")
-  @ApiOperation({ summary: "Apply password reset token and set new password" })
-  @ApiOkResponse({ description: "Password changed successfully" })
-  @ApiBadRequestResponse({ description: "Invalid or expired token" })
+  @ApiOperation({ summary: "Сброс пароля по токену из email" })
+  @ApiOkResponse({ description: "Пароль изменён" })
+  @ApiBadRequestResponse({ description: "Токен недействителен или истёк" })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto.token, dto.newPassword);
+  }
+
+  @Throttle({ default: { limit: 5, ttl: 60000 } })
+  @HttpCode(200)
+  @Post("reset-password/phone")
+  @ApiOperation({ summary: "Сброс пароля по OTP-коду из SMS" })
+  @ApiOkResponse({ description: "Пароль изменён" })
+  @ApiBadRequestResponse({ description: "Неверный или истёкший OTP-код" })
+  resetPasswordByPhone(@Body() dto: ResetPasswordPhoneDto) {
+    return this.authService.resetPasswordByPhone(dto.phone, dto.code, dto.newPassword);
   }
 
   // ─── Sessions ──────────────────────────────────────────────────────────────

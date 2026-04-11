@@ -4,6 +4,8 @@ import { JwtModule, JwtService } from "@nestjs/jwt";
 import { PrismaService } from "src/prisma.service";
 import { RedisModule } from "src/redis/redis.module";
 import { UserService } from "src/user/user.service";
+import { MailModule } from "src/mail/mail.module";
+import { SmsModule } from "src/sms/sms.module";
 import { AuthController } from "./auth.controller";
 import { AuthService } from "./auth.service";
 import { JwtStrategy } from "./strategies/jwt.strategy";
@@ -26,6 +28,8 @@ import { PermissionsService } from "./permissions/permissions.service";
   imports: [
     ConfigModule,
     RedisModule,
+    MailModule,
+    SmsModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

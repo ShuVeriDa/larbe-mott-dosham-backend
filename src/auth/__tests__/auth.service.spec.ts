@@ -62,7 +62,10 @@ describe("AuthService", () => {
       }),
     };
 
-    service = new AuthService(prisma, jwt, userService, configService);
+    const mailService = { sendPasswordReset: jest.fn().mockResolvedValue(undefined) } as any;
+    const smsService = { send: jest.fn().mockResolvedValue(undefined) } as any;
+
+    service = new AuthService(prisma, jwt, userService, configService, mailService, smsService);
   });
 
   describe("login", () => {

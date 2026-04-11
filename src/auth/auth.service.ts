@@ -9,12 +9,14 @@ import {
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { hash, verify } from "argon2";
-import { randomBytes } from "crypto";
+import { randomBytes, randomInt } from "crypto";
 import { Response } from "express";
 import { PrismaService } from "src/prisma.service";
 import { UserService } from "src/user/user.service";
 import { CreateUserDto } from "src/user/dto/create-user.dto";
 import { LoginDto } from "src/user/dto/login.dto";
+import { MailService } from "src/mail/mail.service";
+import { SmsService } from "src/sms/sms.service";
 
 @Injectable()
 export class AuthService {
@@ -25,6 +27,8 @@ export class AuthService {
     private jwt: JwtService,
     private userService: UserService,
     private readonly configService: ConfigService,
+    private readonly mailService: MailService,
+    private readonly smsService: SmsService,
   ) {}
 
   async login(dto: LoginDto) {
@@ -186,7 +190,7 @@ export class AuthService {
     this.logger.log(`Logout: ${userId}`);
   }
 
-  async forgotPassword(email: string) {
+  async forgotPasswordByEmail(email: string) {
     const user = await this.prisma.user.findFirst({
       where: { email: { equals: email, mode: "insensitive" } },
     });
@@ -209,15 +213,108 @@ export class AuthService {
       data: { userId: user.id, token: rawToken, expiresAt },
     });
 
-    this.logger.log(`Password reset requested for user ${user.id}`);
+    this.logger.log(`Password reset (email) requested for user ${user.id}`);
 
-    // В production здесь будет отправка email.
-    // Пока возвращаем токен напрямую — для разработки и тестирования frontend.
     const isDev = this.configService.get("NODE_ENV") !== "production";
+
+    try {
+      await this.mailService.sendPasswordReset(user.email, rawToken);
+    } catch (err) {
+      this.logger.error(`Failed to send password reset email to ${user.email}`, err);
+      // В dev возвращаем токен напрямую даже при ошибке отправки
+      if (isDev) {
+        return {
+          message: "Email не отправлен (ошибка SMTP), но токен доступен для тестирования",
+          resetToken: rawToken,
+        };
+      }
+      // В prod не сообщаем об ошибке пользователю
+    }
+
     return {
       message: "Если аккаунт с таким email существует, мы отправили ссылку для сброса пароля",
       ...(isDev && { resetToken: rawToken }),
     };
+  }
+
+  async forgotPasswordByPhone(phone: string) {
+    const user = await this.prisma.user.findFirst({ where: { phone } });
+
+    // Не раскрываем факт существования
+    if (!user) {
+      return { message: "Если аккаунт с таким номером существует, мы отправили SMS с кодом" };
+    }
+
+    // Инвалидируем старые OTP этого пользователя
+    await this.prisma.phoneOtp.updateMany({
+      where: { userId: user.id, usedAt: null },
+      data: { usedAt: new Date() },
+    });
+
+    const rawCode = String(randomInt(100000, 999999)); // 6 цифр
+    const hashedCode = await hash(rawCode);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 минут
+
+    await this.prisma.phoneOtp.create({
+      data: { userId: user.id, code: hashedCode, expiresAt },
+    });
+
+    this.logger.log(`Password reset (phone OTP) requested for user ${user.id}`);
+
+    const isDev = this.configService.get("NODE_ENV") !== "production";
+
+    try {
+      await this.smsService.send(phone, `Ваш код для сброса пароля MottLarbe: ${rawCode}. Действителен 10 минут.`);
+    } catch (err) {
+      this.logger.error(`Failed to send OTP SMS to ${phone}`, err);
+    }
+
+    return {
+      message: "Если аккаунт с таким номером существует, мы отправили SMS с кодом",
+      ...(isDev && { otp: rawCode }),
+    };
+  }
+
+  async resetPasswordByPhone(phone: string, code: string, newPassword: string) {
+    const user = await this.prisma.user.findFirst({ where: { phone } });
+    if (!user) {
+      throw new BadRequestException("Неверный номер телефона или код");
+    }
+
+    // Берём последний действующий OTP
+    const record = await this.prisma.phoneOtp.findFirst({
+      where: { userId: user.id, usedAt: null },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!record) {
+      throw new BadRequestException("OTP-код не найден или уже использован");
+    }
+
+    if (record.expiresAt < new Date()) {
+      throw new BadRequestException("Срок действия кода истёк");
+    }
+
+    const isValid = await verify(record.code, code);
+    if (!isValid) {
+      throw new BadRequestException("Неверный код");
+    }
+
+    const hashedPassword = await hash(newPassword);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: user.id },
+        data: { password: hashedPassword, hashedRefreshToken: null },
+      }),
+      this.prisma.phoneOtp.update({
+        where: { id: record.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    this.logger.log(`Password reset (phone) completed for user ${user.id}`);
+    return { message: "Пароль успешно изменён" };
   }
 
   async resetPassword(token: string, newPassword: string) {
