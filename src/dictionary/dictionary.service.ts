@@ -9,7 +9,7 @@ import { PrismaService } from "src/prisma.service";
 import { RedisService } from "src/redis/redis.service";
 import { DeclensionService } from "./declension.service";
 import { SearchEntryDto } from "./dto/search-entry.dto";
-import { UpdateEntryDto, BulkUpdateItemDto } from "./dto/update-entry.dto";
+import { BulkUpdateItemDto, UpdateEntryDto } from "./dto/update-entry.dto";
 
 const CACHE_TTL = 300; // 5 минут
 const CACHE_PREFIX = "dict";
@@ -28,20 +28,50 @@ interface SourceMeta {
 }
 
 const SOURCE_MAP: Record<string, SourceMeta> = {
-  "maciev":                   { name: "Мациев А.Г. Чеченско-русский словарь (1961)",       direction: "nah→ru" },
-  "baisultanov-nah-ru":       { name: "Байсултанов Д. Чеченско-русский словарь",            direction: "nah→ru" },
-  "baisultanov-ru-nah":       { name: "Байсултанов Д. Русско-чеченский словарь",            direction: "ru→nah" },
-  "ismailov-nah-ru":          { name: "Исмаилов Ш. Чеченско-русский словарь",              direction: "nah→ru" },
-  "karasaev-ru-nah":          { name: "Карасаев А.Т. Русско-чеченский словарь",            direction: "ru→nah" },
-  "karasaev-nah-ru":          { name: "Карасаев А.Т. Чеченско-русский словарь",            direction: "nah→ru" },
-  "vagapov":                  { name: "Вагапов А.Д. Этимологический словарь",              direction: "nah→ru" },
-  "aliev":                    { name: "Алиев Х.О. Чеченско-русский словарь",               direction: "nah→ru" },
-  "malsagov":                 { name: "Мальсагов З.К. Грамматика чеченского языка",        direction: "nah→ru" },
-  "taimiev":                  { name: "Таймиев А. Чеченско-русский словарь",               direction: "nah→ru" },
-  "sulejmanov":               { name: "Сулейманов А. Чеченско-русский словарь",            direction: "nah→ru" },
-  "natsieva":                 { name: "Нацаева С. Чеченско-русский фразеологический словарь", direction: "nah→ru" },
-  "collected":                { name: "Ручной сборник (авторский)",                        direction: "оба"    },
-  "neologisms":               { name: "Неологизмы чеченского языка",                       direction: "оба"    },
+  maciev: {
+    name: "Мациев А.Г. Чеченско-русский словарь (1961)",
+    direction: "nah→ru",
+  },
+  "baisultanov-nah-ru": {
+    name: "Байсултанов Д. Чеченско-русский словарь",
+    direction: "nah→ru",
+  },
+  "baisultanov-ru-nah": {
+    name: "Байсултанов Д. Русско-чеченский словарь",
+    direction: "ru→nah",
+  },
+  "ismailov-nah-ru": {
+    name: "Исмаилов Ш. Чеченско-русский словарь",
+    direction: "nah→ru",
+  },
+  "karasaev-ru-nah": {
+    name: "Карасаев А.Т. Русско-чеченский словарь",
+    direction: "ru→nah",
+  },
+  "karasaev-nah-ru": {
+    name: "Карасаев А.Т. Чеченско-русский словарь",
+    direction: "nah→ru",
+  },
+  vagapov: {
+    name: "Вагапов А.Д. Этимологический словарь",
+    direction: "nah→ru",
+  },
+  aliev: { name: "Алиев Х.О. Чеченско-русский словарь", direction: "nah→ru" },
+  malsagov: {
+    name: "Мальсагов З.К. Грамматика чеченского языка",
+    direction: "nah→ru",
+  },
+  taimiev: { name: "Таймиев А. Чеченско-русский словарь", direction: "nah→ru" },
+  sulejmanov: {
+    name: "Сулейманов А. Чеченско-русский словарь",
+    direction: "nah→ru",
+  },
+  natsieva: {
+    name: "Нацаева С. Чеченско-русский фразеологический словарь",
+    direction: "nah→ru",
+  },
+  collected: { name: "Ручной сборник (авторский)", direction: "оба" },
+  neologisms: { name: "Неологизмы чеченского языка", direction: "оба" },
 };
 
 const CEFR_ORDER = ["A1", "A2", "B1", "B2", "C1", "C2"];
@@ -58,13 +88,25 @@ export class DictionaryService {
 
   async search(dto: SearchEntryDto) {
     const stableKey = JSON.stringify(
-      Object.fromEntries(Object.entries(dto).sort(([a], [b]) => a.localeCompare(b))),
+      Object.fromEntries(
+        Object.entries(dto).sort(([a], [b]) => a.localeCompare(b)),
+      ),
     );
     const cacheKey = `${CACHE_PREFIX}:search:${stableKey}`;
     const cached = await this.getCache(cacheKey);
     if (cached) return cached;
 
-    const { q, cefr, pos, nounClass, entryType, source, sort = "relevance", limit = 20, offset = 0 } = dto;
+    const {
+      q,
+      cefr,
+      pos,
+      nounClass,
+      entryType,
+      source,
+      sort = "relevance",
+      limit = 20,
+      offset = 0,
+    } = dto;
 
     const raw = q.trim();
     const normalized = normalizeWord(raw);
@@ -195,12 +237,16 @@ export class DictionaryService {
     const cached = await this.getCache(cacheKey);
     if (cached) return cached;
 
-    const counts = await this.prisma.$queryRaw<{ src: string; count: bigint }[]>`
+    const counts = await this.prisma.$queryRaw<
+      { src: string; count: bigint }[]
+    >`
       SELECT src, COUNT(*) AS count
       FROM "UnifiedEntry", unnest(sources) AS src
       GROUP BY src
     `;
-    const countMap = Object.fromEntries(counts.map((c) => [c.src, Number(c.count)]));
+    const countMap = Object.fromEntries(
+      counts.map((c) => [c.src, Number(c.count)]),
+    );
 
     const result = Object.entries(SOURCE_MAP).map(([slug, meta]) => ({
       slug,
@@ -236,7 +282,9 @@ export class DictionaryService {
     if (cached) return cached;
 
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const rows = await this.prisma.$queryRaw<{ query: string; count: bigint }[]>`
+    const rows = await this.prisma.$queryRaw<
+      { query: string; count: bigint }[]
+    >`
       SELECT query, COUNT(*) AS count
       FROM "SearchHistory"
       WHERE "createdAt" >= ${since}
@@ -244,7 +292,10 @@ export class DictionaryService {
       ORDER BY count DESC
       LIMIT 10
     `;
-    const result = rows.map((r) => ({ query: r.query, count: Number(r.count) }));
+    const result = rows.map((r) => ({
+      query: r.query,
+      count: Number(r.count),
+    }));
     await this.setCache(cacheKey, result);
     return result;
   }
@@ -327,9 +378,7 @@ export class DictionaryService {
 
     // Детерминированный индекс по дате: меняется раз в сутки
     const today = new Date().toISOString().slice(0, 10); // "2026-04-09"
-    const seed = today
-      .split("")
-      .reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const seed = today.split("").reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
     const skip = seed % total;
 
     const entry = await this.prisma.unifiedEntry.findFirst({ skip });
@@ -370,7 +419,7 @@ export class DictionaryService {
 
     if (q && q.trim().length > 0) {
       const normalized = normalizeWord(q.trim());
-      const pattern = '%' + q + '%';
+      const pattern = "%" + q + "%";
       const results = await this.prisma.$queryRaw<
         (UnifiedSearchResult & { total_count: bigint })[]
       >`

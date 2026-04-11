@@ -35,19 +35,19 @@ enum PermissionCode {
 //////////////////////////////////////////////////////
 
 model User {
-  id                 String   @id @default(uuid())
-  email              String   @unique
+  id                 String  @id @default(uuid())
+  email              String  @unique
   password           String
-  username           String   @unique
+  username           String  @unique
   name               String
-  hashedRefreshToken String?  @db.Text
-  avatarUrl  String?
+  hashedRefreshToken String? @db.Text
+  avatarUrl          String?
 
-  status       String    @default("active") // active | blocked
-  banReason    String?
-  emailVerified    Boolean   @default(false)
-  emailVerifiedAt  DateTime?
-  lastLoggedIn DateTime? // updated on each successful login
+  status          String    @default("active") // active | blocked
+  banReason       String?
+  emailVerified   Boolean   @default(false)
+  emailVerifiedAt DateTime?
+  lastLoggedIn    DateTime? // updated on each successful login
 
   // Предпочтения пользователя
   prefSaveHistory     Boolean @default(true)
@@ -62,15 +62,15 @@ model User {
   prefPublicProfile   Boolean @default(false)
   prefPublicFavorites Boolean @default(false)
 
-  roles     UserRoleAssignment[]
-  sessions  UserSession[]
+  roles    UserRoleAssignment[]
+  sessions UserSession[]
 
-  favorites      UserFavorite[]
-  searchHistory  SearchHistory[]
+  favorites           UserFavorite[]
+  searchHistory       SearchHistory[]
   passwordResetTokens PasswordResetToken[]
-  suggestions    Suggestion[]     @relation("SuggestionAuthor")
-  reviewedSuggestions Suggestion[] @relation("SuggestionReviewer")
-  entryEditLogs  EntryEditLog[]
+  suggestions         Suggestion[]         @relation("SuggestionAuthor")
+  reviewedSuggestions Suggestion[]         @relation("SuggestionReviewer")
+  entryEditLogs       EntryEditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -80,13 +80,13 @@ model User {
 }
 
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  token     String   @unique
+  token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?
 
-  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -96,8 +96,8 @@ model PasswordResetToken {
 }
 
 model UserSession {
-  id        String    @id @default(uuid())
-  userId    String
+  id     String @id @default(uuid())
+  userId String
 
   ipAddress String?
   userAgent String?
@@ -106,7 +106,7 @@ model UserSession {
   lastActiveAt DateTime  @default(now())
   revokedAt    DateTime?
 
-  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([createdAt])
@@ -118,21 +118,21 @@ model UserSession {
 //////////////////////////////////////////////////////
 
 model Role {
-  id          String   @id @default(uuid())
-  name        RoleName @unique
+  id   String   @id @default(uuid())
+  name RoleName @unique
 
   users       UserRoleAssignment[]
   permissions RolePermission[]
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@map("role")
 }
 
 model Permission {
-  id    String         @id @default(uuid())
-  code  PermissionCode @unique
+  id   String         @id @default(uuid())
+  code PermissionCode @unique
 
   roles RolePermission[]
 
@@ -157,8 +157,8 @@ model UserRoleAssignment {
   userId String
   roleId String
 
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   assignedAt DateTime @default(now())
 
@@ -172,15 +172,15 @@ model UserRoleAssignment {
 //////////////////////////////////////////////////////
 
 model ApiKey {
-  id          String    @id @default(uuid())
-  key         String    @unique
-  name        String    // "Читалка", "MottLarbe Admin" и т.п.
-  role        RoleName  @default(USER) // какие права у этого ключа
-  isActive    Boolean   @default(true)
-  expiresAt   DateTime? // null = бессрочный
+  id        String    @id @default(uuid())
+  key       String    @unique
+  name      String // "Читалка", "MottLarbe Admin" и т.п.
+  role      RoleName  @default(USER) // какие права у этого ключа
+  isActive  Boolean   @default(true)
+  expiresAt DateTime? // null = бессрочный
 
-  createdAt   DateTime  @default(now())
-  lastUsedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
 
   @@index([key])
   @@map("api_key")
@@ -191,12 +191,12 @@ model ApiKey {
 //////////////////////////////////////////////////////
 
 model UserFavorite {
-  id       String @id @default(uuid())
-  userId   String
-  entryId  Int
+  id      String @id @default(uuid())
+  userId  String
+  entryId Int
 
-  user     User         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  entry    UnifiedEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entry UnifiedEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -206,12 +206,12 @@ model UserFavorite {
 }
 
 model SearchHistory {
-  id     String @id @default(uuid())
+  id     String  @id @default(uuid())
   userId String
   query  String
   lang   String? // "nah" | "ru" | "unknown"
 
-  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -230,17 +230,17 @@ enum SuggestionStatus {
 }
 
 model Suggestion {
-  id       String           @id @default(uuid())
+  id       String  @id @default(uuid())
   userId   String
   entryId  Int
-  field    String           // какое поле: "meanings", "word", "nounClass", ...
-  oldValue String?          @db.Text
-  newValue String           @db.Text
+  field    String // какое поле: "meanings", "word", "nounClass", ...
+  oldValue String? @db.Text
+  newValue String  @db.Text
   comment  String?
 
-  status   SuggestionStatus @default(PENDING)
-  reviewedBy String?
-  reviewedAt DateTime?
+  status        SuggestionStatus @default(PENDING)
+  reviewedBy    String?
+  reviewedAt    DateTime?
   reviewComment String?
 
   user     User         @relation("SuggestionAuthor", fields: [userId], references: [id], onDelete: Cascade)
@@ -261,16 +261,16 @@ model Suggestion {
 
 model EntryEditLog {
   id        String  @id @default(uuid())
-  entryId   Int?    // null для pipeline/bulk-событий без конкретной записи
+  entryId   Int? // null для pipeline/bulk-событий без конкретной записи
   userId    String? // null если через API-ключ или pipeline
   apiKeyId  String? // null если через JWT или pipeline
   actorType String? // "admin" | "pipeline" | "api"
 
-  action   String   // "create" | "update" | "delete" | "bulk" | "pipeline" | "revert"
-  changes  Json     // { field: { old: ..., new: ... }, ... } или { command: ... }
+  action  String // "create" | "update" | "delete" | "bulk" | "pipeline" | "revert"
+  changes Json // { field: { old: ..., new: ... }, ... } или { command: ... }
 
-  user     User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
-  entry    UnifiedEntry? @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  user  User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  entry UnifiedEntry? @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
   createdAt DateTime @default(now())
 
@@ -293,7 +293,7 @@ model LoadRun {
   skipped        Int
   totalInFile    Int
   elapsedSeconds Float
-  status         String   // "ok" | "error"
+  status         String // "ok" | "error"
   errorMessage   String?
 
   @@index([createdAt])
@@ -313,7 +313,7 @@ model ImproveRun {
   cleanedPhraseology    Int
   cleanedCitations      Int
   elapsedSeconds        Float
-  status                String   // "ok" | "error"
+  status                String // "ok" | "error"
   errorMessage          String?
 
   @@index([createdAt])
@@ -325,35 +325,36 @@ model ImproveRun {
 //////////////////////////////////////////////////////
 
 model UnifiedEntry {
-  id            Int     @id @default(autoincrement())
-  word          String  // слово без диакритики (основная форма для поиска)
-  wordAccented  String? // слово с ударениями/тильдами
+  id             Int     @id @default(autoincrement())
+  word           String // слово без диакритики (основная форма для поиска)
+  wordAccented   String? // слово с ударениями/тильдами
   wordNormalized String // lowercase, без диакритики — для ILIKE/similarity
 
-  partOfSpeech     String? // часть речи (рус.): сущ., гл., прил., нареч., ...
-  partOfSpeechNah  String? // часть речи (нох.): ц1ердош, хандош, билгалдош, ...
-  nounClass     String? // грамм. класс ед.ч.: "ву", "йу", "ду", "бу"
+  partOfSpeech    String? // часть речи (рус.): сущ., гл., прил., нареч., ...
+  partOfSpeechNah String? // часть речи (нох.): ц1ердош, хандош, билгалдош, ...
+  nounClass       String? // грамм. класс ед.ч.: "ву", "йу", "ду", "бу"
   nounClassPlural String? // грамм. класс мн.ч. если отличается
+  homonymIndex    Int?    // индекс омонима: вон¹=1, вон²=2 (null = единственный)
 
-  grammar       Json?   // { genitive, dative, ergative, instrumental, plural, pluralClass,
-                        //   verbPresent, verbPast, verbParticiple }
+  grammar Json? // { genitive, dative, ergative, instrumental, plural, pluralClass,
+  //   verbPresent, verbPast, verbParticiple }
 
-  meanings      Json    // [{ translation, examples: [{ nah, ru }] }]
-  phraseology   Json?   // [{ nah, ru }]
-  citations     Json?   // [{ text, source? }] — литературные цитаты
-  latinName     String? // латинское анатомическое название
-  styleLabel    String? // стиль/регистр: Прост., Устар., Старин., Разг.
+  meanings    Json // [{ translation, examples: [{ nah, ru }] }]
+  phraseology Json? // [{ nah, ru }]
+  citations   Json? // [{ text, source? }] — литературные цитаты
+  latinName   String? // латинское анатомическое название
+  styleLabel  String? // стиль/регистр: Прост., Устар., Старин., Разг.
 
-  variants      String[] // варианты написания/формы того же слова (для поиска)
+  variants String[] // варианты написания/формы того же слова (для поиска)
 
-  domain        String? // предметная область: anatomy, computer, math, geology, law, sport
-  cefrLevel     String? // оценка уровня CEFR: A1, A2, B1, B2, C1, C2
-  entryType     String  @default("standard") // "standard" | "neologism"
-  sources       String[] // из каких словарей: ["maciev", "baisultanov", ...]
+  domain    String? // предметная область: anatomy, computer, math, geology, law, sport
+  cefrLevel String? // оценка уровня CEFR: A1, A2, B1, B2, C1, C2
+  entryType String   @default("standard") // "standard" | "neologism"
+  sources   String[] // из каких словарей: ["maciev", "baisultanov", ...]
 
-  favorites     UserFavorite[]
-  suggestions   Suggestion[]
-  editLogs      EntryEditLog[]
+  favorites   UserFavorite[]
+  suggestions Suggestion[]
+  editLogs    EntryEditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
