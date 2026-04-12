@@ -13,14 +13,10 @@ import {
   Res,
   UnauthorizedException,
 } from "@nestjs/common";
-import { ForgotPasswordDto } from "./dto/forgot-password.dto";
-import { ResetPasswordDto } from "./dto/reset-password.dto";
-import { ResetPasswordPhoneDto } from "./dto/reset-password-phone.dto";
 import { ConfigService } from "@nestjs/config";
-import { Throttle } from "@nestjs/throttler";
 import {
-  ApiBearerAuth,
   ApiBadRequestResponse,
+  ApiBearerAuth,
   ApiBody,
   ApiConflictResponse,
   ApiCreatedResponse,
@@ -32,13 +28,17 @@ import {
   ApiTags,
   ApiUnauthorizedResponse,
 } from "@nestjs/swagger";
-import { UserService } from "src/user/user.service";
+import { Throttle } from "@nestjs/throttler";
 import * as express from "express";
 import { User } from "src/user/decorators/user.decorator";
-import { LoginDto } from "src/user/dto/login.dto";
 import { CreateUserDto } from "src/user/dto/create-user.dto";
+import { LoginDto } from "src/user/dto/login.dto";
+import { UserService } from "src/user/user.service";
 import { AuthService } from "./auth.service";
 import { Auth } from "./decorators/auth.decorator";
+import { ForgotPasswordDto } from "./dto/forgot-password.dto";
+import { ResetPasswordPhoneDto } from "./dto/reset-password-phone.dto";
+import { ResetPasswordDto } from "./dto/reset-password.dto";
 
 @ApiTags("auth")
 @Controller("auth")
@@ -145,14 +145,16 @@ export class AuthController {
   @HttpCode(200)
   @Post("forgot-password")
   @ApiOperation({
-    summary: "Запрос сброса пароля",
+    summary: "Request password reset",
     description:
-      "Передайте `email` ИЛИ `phone` (не оба одновременно). " +
-      "По email придёт письмо со ссылкой/токеном, по телефону — SMS с 6-значным OTP-кодом.",
+      "Provide `email` OR `phone` (not both at once). " +
+      "An email with a reset link/token will be sent to the email address; an SMS with a 6-digit OTP code will be sent to the phone.",
   })
   @ApiBody({ type: ForgotPasswordDto })
-  @ApiOkResponse({ description: "Письмо/SMS отправлены (токен/OTP в ответе только в dev)" })
-  @ApiBadRequestResponse({ description: "Не указан ни email, ни phone" })
+  @ApiOkResponse({
+    description: "Email/SMS sent (token/OTP included in response in dev mode only)",
+  })
+  @ApiBadRequestResponse({ description: "Neither email nor phone provided" })
   forgotPassword(@Body() dto: ForgotPasswordDto) {
     if (dto.email) {
       return this.authService.forgotPasswordByEmail(dto.email);
@@ -160,15 +162,15 @@ export class AuthController {
     if (dto.phone) {
       return this.authService.forgotPasswordByPhone(dto.phone);
     }
-    throw new BadRequestException("Укажите email или номер телефона");
+    throw new BadRequestException("Provide email or phone number");
   }
 
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(200)
   @Post("reset-password")
-  @ApiOperation({ summary: "Сброс пароля по токену из email" })
-  @ApiOkResponse({ description: "Пароль изменён" })
-  @ApiBadRequestResponse({ description: "Токен недействителен или истёк" })
+  @ApiOperation({ summary: "Reset password using token from email" })
+  @ApiOkResponse({ description: "Password changed successfully" })
+  @ApiBadRequestResponse({ description: "Token is invalid or expired" })
   resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto.token, dto.newPassword);
   }
@@ -176,11 +178,15 @@ export class AuthController {
   @Throttle({ default: { limit: 5, ttl: 60000 } })
   @HttpCode(200)
   @Post("reset-password/phone")
-  @ApiOperation({ summary: "Сброс пароля по OTP-коду из SMS" })
-  @ApiOkResponse({ description: "Пароль изменён" })
-  @ApiBadRequestResponse({ description: "Неверный или истёкший OTP-код" })
+  @ApiOperation({ summary: "Reset password using OTP code from SMS" })
+  @ApiOkResponse({ description: "Password changed successfully" })
+  @ApiBadRequestResponse({ description: "Invalid or expired OTP code" })
   resetPasswordByPhone(@Body() dto: ResetPasswordPhoneDto) {
-    return this.authService.resetPasswordByPhone(dto.phone, dto.code, dto.newPassword);
+    return this.authService.resetPasswordByPhone(
+      dto.phone,
+      dto.code,
+      dto.newPassword,
+    );
   }
 
   // ─── Sessions ──────────────────────────────────────────────────────────────
@@ -188,12 +194,9 @@ export class AuthController {
   @Auth()
   @Get("sessions")
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Список активных сессий текущего пользователя" })
-  @ApiOkResponse({ description: "Массив сессий с флагом isCurrent" })
-  getSessions(
-    @User("id") userId: string,
-    @Req() req: express.Request,
-  ) {
+  @ApiOperation({ summary: "List active sessions for current user" })
+  @ApiOkResponse({ description: "Array of sessions with isCurrent flag" })
+  getSessions(@User("id") userId: string, @Req() req: express.Request) {
     const currentSessionId = (req as { sessionId?: string }).sessionId;
     return this.authService.getSessions(userId, currentSessionId);
   }
@@ -202,11 +205,11 @@ export class AuthController {
   @Delete("sessions/:id")
   @HttpCode(200)
   @ApiBearerAuth()
-  @ApiParam({ name: "id", description: "ID сессии" })
-  @ApiOperation({ summary: "Завершить конкретную сессию" })
-  @ApiOkResponse({ description: "Сессия завершена" })
-  @ApiForbiddenResponse({ description: "Нельзя завершить текущую сессию" })
-  @ApiNotFoundResponse({ description: "Сессия не найдена" })
+  @ApiParam({ name: "id", description: "Session ID" })
+  @ApiOperation({ summary: "Revoke a specific session" })
+  @ApiOkResponse({ description: "Session revoked" })
+  @ApiForbiddenResponse({ description: "Cannot revoke the current session" })
+  @ApiNotFoundResponse({ description: "Session not found" })
   async revokeSession(
     @User("id") userId: string,
     @Param("id") sessionId: string,
@@ -214,11 +217,16 @@ export class AuthController {
   ) {
     const currentSessionId = (req as { sessionId?: string }).sessionId;
     try {
-      return await this.authService.revokeSession(userId, sessionId, currentSessionId);
+      return await this.authService.revokeSession(
+        userId,
+        sessionId,
+        currentSessionId,
+      );
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("Cannot revoke current")) throw new ForbiddenException("Нельзя завершить текущую сессию");
-      throw new NotFoundException("Сессия не найдена или уже завершена");
+      if (msg.includes("Cannot revoke current"))
+        throw new ForbiddenException("Cannot revoke the current session");
+      throw new NotFoundException("Session not found or already revoked");
     }
   }
 
@@ -226,12 +234,9 @@ export class AuthController {
   @Delete("sessions")
   @HttpCode(200)
   @ApiBearerAuth()
-  @ApiOperation({ summary: "Завершить все сессии кроме текущей" })
+  @ApiOperation({ summary: "Revoke all sessions except the current one" })
   @ApiOkResponse({ description: "{ count: number }" })
-  revokeAllSessions(
-    @User("id") userId: string,
-    @Req() req: express.Request,
-  ) {
+  revokeAllSessions(@User("id") userId: string, @Req() req: express.Request) {
     const currentSessionId = (req as { sessionId?: string }).sessionId;
     return this.authService.revokeAllOtherSessions(userId, currentSessionId);
   }

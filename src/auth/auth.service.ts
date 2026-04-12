@@ -11,12 +11,12 @@ import { JwtService } from "@nestjs/jwt";
 import { hash, verify } from "argon2";
 import { randomBytes, randomInt } from "crypto";
 import { Response } from "express";
+import { MailService } from "src/mail/mail.service";
 import { PrismaService } from "src/prisma.service";
-import { UserService } from "src/user/user.service";
+import { SmsService } from "src/sms/sms.service";
 import { CreateUserDto } from "src/user/dto/create-user.dto";
 import { LoginDto } from "src/user/dto/login.dto";
-import { MailService } from "src/mail/mail.service";
-import { SmsService } from "src/sms/sms.service";
+import { UserService } from "src/user/user.service";
 
 @Injectable()
 export class AuthService {
@@ -92,20 +92,25 @@ export class AuthService {
     }));
   }
 
-  async revokeSession(userId: string, sessionId: string, currentSessionId?: string) {
+  async revokeSession(
+    userId: string,
+    sessionId: string,
+    currentSessionId?: string,
+  ) {
     const session = await this.prisma.userSession.findFirst({
       where: { id: sessionId, userId, revokedAt: null },
     });
 
     if (!session) throw new Error("Session not found or already revoked");
-    if (session.id === currentSessionId) throw new Error("Cannot revoke current session");
+    if (session.id === currentSessionId)
+      throw new Error("Cannot revoke current session");
 
     await this.prisma.userSession.update({
       where: { id: sessionId },
       data: { revokedAt: new Date() },
     });
 
-    return { message: "Сессия завершена" };
+    return { message: "Session revoked" };
   }
 
   async revokeAllOtherSessions(userId: string, currentSessionId?: string) {
@@ -118,7 +123,7 @@ export class AuthService {
       data: { revokedAt: new Date() },
     });
 
-    return { message: "Все другие сессии завершены", count: result.count };
+    return { message: "All other sessions revoked", count: result.count };
   }
 
   addRefreshTokenResponse(res: Response, refreshToken: string) {
@@ -195,19 +200,22 @@ export class AuthService {
       where: { email: { equals: email, mode: "insensitive" } },
     });
 
-    // Не раскрываем факт существования пользователя
+    // Do not reveal whether the account exists
     if (!user) {
-      return { message: "Если аккаунт с таким email существует, мы отправили ссылку для сброса пароля" };
+      return {
+        message:
+          "If an account with this email exists, we have sent a password reset link",
+      };
     }
 
-    // Инвалидируем старые неиспользованные токены
+    // Invalidate old unused tokens
     await this.prisma.passwordResetToken.updateMany({
       where: { userId: user.id, usedAt: null },
       data: { usedAt: new Date() },
     });
 
     const rawToken = randomBytes(32).toString("hex");
-    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 час
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
 
     await this.prisma.passwordResetToken.create({
       data: { userId: user.id, token: rawToken, expiresAt },
@@ -220,19 +228,24 @@ export class AuthService {
     try {
       await this.mailService.sendPasswordReset(user.email, rawToken);
     } catch (err) {
-      this.logger.error(`Failed to send password reset email to ${user.email}`, err);
-      // В dev возвращаем токен напрямую даже при ошибке отправки
+      this.logger.error(
+        `Failed to send password reset email to ${user.email}`,
+        err,
+      );
+      // In dev, return the token directly even if sending fails
       if (isDev) {
         return {
-          message: "Email не отправлен (ошибка SMTP), но токен доступен для тестирования",
+          message:
+            "Email not sent (SMTP error), but token is available for testing",
           resetToken: rawToken,
         };
       }
-      // В prod не сообщаем об ошибке пользователю
+      // In prod, do not reveal the error to the user
     }
 
     return {
-      message: "Если аккаунт с таким email существует, мы отправили ссылку для сброса пароля",
+      message:
+        "If an account with this email exists, we have sent a password reset link",
       ...(isDev && { resetToken: rawToken }),
     };
   }
@@ -240,20 +253,23 @@ export class AuthService {
   async forgotPasswordByPhone(phone: string) {
     const user = await this.prisma.user.findFirst({ where: { phone } });
 
-    // Не раскрываем факт существования
+    // Do not reveal whether the account exists
     if (!user) {
-      return { message: "Если аккаунт с таким номером существует, мы отправили SMS с кодом" };
+      return {
+        message:
+          "If an account with this phone number exists, we have sent an SMS with the code",
+      };
     }
 
-    // Инвалидируем старые OTP этого пользователя
+    // Invalidate old OTPs for this user
     await this.prisma.phoneOtp.updateMany({
       where: { userId: user.id, usedAt: null },
       data: { usedAt: new Date() },
     });
 
-    const rawCode = String(randomInt(100000, 999999)); // 6 цифр
+    const rawCode = String(randomInt(100000, 999999)); // 6 digits
     const hashedCode = await hash(rawCode);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 минут
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
 
     await this.prisma.phoneOtp.create({
       data: { userId: user.id, code: hashedCode, expiresAt },
@@ -264,13 +280,17 @@ export class AuthService {
     const isDev = this.configService.get("NODE_ENV") !== "production";
 
     try {
-      await this.smsService.send(phone, `Ваш код для сброса пароля MottLarbe: ${rawCode}. Действителен 10 минут.`);
+      await this.smsService.send(
+        phone,
+        `Your MottLarbe password reset code: ${rawCode}. Valid for 10 minutes.`,
+      );
     } catch (err) {
       this.logger.error(`Failed to send OTP SMS to ${phone}`, err);
     }
 
     return {
-      message: "Если аккаунт с таким номером существует, мы отправили SMS с кодом",
+      message:
+        "If an account with this phone number exists, we have sent an SMS with the code",
       ...(isDev && { otp: rawCode }),
     };
   }
@@ -278,26 +298,26 @@ export class AuthService {
   async resetPasswordByPhone(phone: string, code: string, newPassword: string) {
     const user = await this.prisma.user.findFirst({ where: { phone } });
     if (!user) {
-      throw new BadRequestException("Неверный номер телефона или код");
+      throw new BadRequestException("Invalid phone number or code");
     }
 
-    // Берём последний действующий OTP
+    // Get the latest valid OTP
     const record = await this.prisma.phoneOtp.findFirst({
       where: { userId: user.id, usedAt: null },
       orderBy: { createdAt: "desc" },
     });
 
     if (!record) {
-      throw new BadRequestException("OTP-код не найден или уже использован");
+      throw new BadRequestException("OTP code not found or already used");
     }
 
     if (record.expiresAt < new Date()) {
-      throw new BadRequestException("Срок действия кода истёк");
+      throw new BadRequestException("OTP code has expired");
     }
 
     const isValid = await verify(record.code, code);
     if (!isValid) {
-      throw new BadRequestException("Неверный код");
+      throw new BadRequestException("Invalid code");
     }
 
     const hashedPassword = await hash(newPassword);
@@ -314,7 +334,7 @@ export class AuthService {
     ]);
 
     this.logger.log(`Password reset (phone) completed for user ${user.id}`);
-    return { message: "Пароль успешно изменён" };
+    return { message: "Password changed successfully" };
   }
 
   async resetPassword(token: string, newPassword: string) {
@@ -323,11 +343,11 @@ export class AuthService {
     });
 
     if (!record || record.usedAt) {
-      throw new BadRequestException("Токен недействителен или уже использован");
+      throw new BadRequestException("Token is invalid or already used");
     }
 
     if (record.expiresAt < new Date()) {
-      throw new BadRequestException("Срок действия токена истёк");
+      throw new BadRequestException("Token has expired");
     }
 
     const hashedPassword = await hash(newPassword);
@@ -344,7 +364,7 @@ export class AuthService {
     ]);
 
     this.logger.log(`Password reset completed for user ${record.userId}`);
-    return { message: "Пароль успешно изменён" };
+    return { message: "Password changed successfully" };
   }
 
   // -----------------------------------------------------------------------

@@ -21,7 +21,7 @@ export class CreateApiKeyDto {
 
   @ApiPropertyOptional({
     example: "2027-01-01T00:00:00.000Z",
-    description: "Дата истечения ключа. null / отсутствие поля = бессрочный",
+    description: "Key expiration date. null / omitting the field = no expiration",
   })
   @IsOptional()
   @IsDateString()

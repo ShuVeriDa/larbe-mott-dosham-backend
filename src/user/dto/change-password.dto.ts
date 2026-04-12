@@ -6,11 +6,11 @@ export class ChangePasswordDto {
   @IsString()
   currentPassword: string;
 
-  @ApiProperty({ description: "Мин. 8 символов, буквы и цифры" })
+  @ApiProperty({ description: "Min. 8 characters, letters and digits" })
   @IsString()
-  @MinLength(8, { message: "Пароль должен быть не менее 8 символов" })
+  @MinLength(8, { message: "Password must be at least 8 characters" })
   @Matches(/^(?=.*[a-zA-Z])(?=.*\d).+$/, {
-    message: "Пароль должен содержать буквы и цифры",
+    message: "Password must contain both letters and digits",
   })
   newPassword: string;
 }

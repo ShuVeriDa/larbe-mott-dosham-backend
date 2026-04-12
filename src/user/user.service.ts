@@ -103,7 +103,7 @@ export class UserService {
         e instanceof Prisma.PrismaClientKnownRequestError &&
         e.code === "P2002"
       ) {
-        throw new ConflictException("Email или username уже занят");
+        throw new ConflictException("Email or username is already taken");
       }
       throw e;
     }
@@ -114,14 +114,14 @@ export class UserService {
     if (!user) throw new NotFoundException("User not found");
 
     const isValid = await verify(user.password, dto.currentPassword);
-    if (!isValid) throw new UnauthorizedException("Текущий пароль неверен");
+    if (!isValid) throw new UnauthorizedException("Current password is incorrect");
 
     await this.prisma.user.update({
       where: { id: userId },
       data: { password: await hash(dto.newPassword) },
     });
 
-    return { message: "Пароль успешно изменён" };
+    return { message: "Password changed successfully" };
   }
 
   async updatePreferences(userId: string, dto: UpdatePreferencesDto) {
@@ -157,7 +157,7 @@ export class UserService {
   async deleteAccount(userId: string) {
     // Каскадное удаление через onDelete: Cascade в схеме
     await this.prisma.user.delete({ where: { id: userId } });
-    return { message: "Аккаунт удалён" };
+    return { message: "Account deleted" };
   }
 
   async getStats(userId: string) {

@@ -22,7 +22,7 @@ export class UpdateProfileDto {
   @MinLength(2)
   @MaxLength(16)
   @Matches(/^[a-zA-Z0-9_]+$/, {
-    message: "Username может содержать только латиницу, цифры и _",
+    message: "Username may only contain Latin letters, digits, and _",
   })
   username?: string;
 

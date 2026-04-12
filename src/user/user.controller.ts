@@ -35,8 +35,8 @@ export class UserController {
   ) {}
 
   @Patch("me")
-  @ApiOperation({ summary: "Обновить имя, username или email" })
-  @ApiOkResponse({ description: "Обновлённый профиль" })
+  @ApiOperation({ summary: "Update name, username or email" })
+  @ApiOkResponse({ description: "Updated profile" })
   @ApiUnauthorizedResponse()
   updateProfile(
     @User("id") userId: string,
@@ -47,8 +47,8 @@ export class UserController {
 
   @Patch("me/password")
   @HttpCode(200)
-  @ApiOperation({ summary: "Сменить пароль (для авторизованного пользователя)" })
-  @ApiOkResponse({ description: "Пароль изменён" })
+  @ApiOperation({ summary: "Change password (for authenticated user)" })
+  @ApiOkResponse({ description: "Password changed successfully" })
   changePassword(
     @User("id") userId: string,
     @Body() dto: ChangePasswordDto,
@@ -57,8 +57,8 @@ export class UserController {
   }
 
   @Patch("me/preferences")
-  @ApiOperation({ summary: "Обновить предпочтения (история, примеры, компактный вид)" })
-  @ApiOkResponse({ description: "Обновлённые настройки" })
+  @ApiOperation({ summary: "Update preferences (history, examples, compact view)" })
+  @ApiOkResponse({ description: "Updated preferences" })
   updatePreferences(
     @User("id") userId: string,
     @Body() dto: UpdatePreferencesDto,
@@ -67,7 +67,7 @@ export class UserController {
   }
 
   @Get("me/stats")
-  @ApiOperation({ summary: "Статистика профиля: избранное, поиски, предложения" })
+  @ApiOperation({ summary: "Profile statistics: favorites, searches, suggestions" })
   @ApiOkResponse({
     description: "{ favoritesCount, searchCount, suggestionsCount }",
   })
@@ -77,8 +77,8 @@ export class UserController {
 
   @Delete("me")
   @HttpCode(200)
-  @ApiOperation({ summary: 'Удалить аккаунт. Body: { confirmation: "удалить" }' })
-  @ApiOkResponse({ description: "Аккаунт удалён" })
+  @ApiOperation({ summary: 'Delete account. Body: { confirmation: "delete" }' })
+  @ApiOkResponse({ description: "Account deleted" })
   async deleteAccount(
     @User("id") userId: string,
     @Body() dto: DeleteAccountDto,

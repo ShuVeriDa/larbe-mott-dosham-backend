@@ -331,7 +331,7 @@ export class AdminService {
       data: { userId: user.id, token: rawToken, expiresAt },
     });
 
-    return { message: "Письмо для сброса пароля отправлено" };
+    return { message: "Password reset email sent" };
   }
 
   async getAdminUserSessions(userId: string) {
@@ -364,7 +364,7 @@ export class AdminService {
       data: { revokedAt: new Date() },
     });
 
-    return { message: "Сессия завершена" };
+    return { message: "Session revoked" };
   }
 
   async revokeAllAdminUserSessions(userId: string) {
